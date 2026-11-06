@@ -132,7 +132,7 @@ $requestedConfigurations = ($entries | ForEach-Object {
     $sourceLiteral = ConvertTo-SqlUnicodeLiteral $_.SourceName
     $captureLiteral = ConvertTo-SqlUnicodeLiteral $_.CaptureInstanceName
     "($schemaLiteral, $sourceLiteral, $captureLiteral)"
-}) -join ",`n        "
+}) -join ",`n                "
 $capacityErrorLiteral = ConvertTo-SqlUnicodeLiteral 'The requested CDC configuration exceeds the maximum of two capture instances for a source table.'
 
 $preflight.Add(@"
@@ -215,14 +215,13 @@ END;
 "@)
 }
 
-$dynamicBody = @"
+$configurationBody = @"
 -- Validate every configured table and capture-instance name before making changes.
 $($preflight -join "`n")
 
 -- Enable only missing capture instances.
 $($enableStatements -join "`n")
 "@
-$dynamicBodyLiteral = ConvertTo-SqlUnicodeLiteral $dynamicBody
 
 $sql = @"
 /*
@@ -242,7 +241,7 @@ BEGIN
     THROW 51000, N'CDC is not enabled for the current database. Refusing to configure capture instances; verify the deployment target.', 1;
 END;
 
-EXEC sys.sp_executesql $dynamicBodyLiteral;
+$configurationBody
 "@
 
 [System.IO.File]::WriteAllText(

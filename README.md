@@ -32,7 +32,7 @@ The source schema and table identify the table passed to `sys.sp_cdc_enable_tabl
     -OutputPath ./obj/cdc-configuration.sql
 ```
 
-The output directory must already exist. The generator validates the CSV and writes UTF-8 without a byte order mark. It escapes SQL string literals and uses `QUOTENAME` when building table names for `OBJECT_ID`.
+The output directory must already exist. The generator validates the CSV and writes plain T-SQL as UTF-8 without a byte order mark, so the checks and procedure calls are directly reviewable. It escapes SQL string literals and uses `QUOTENAME` when building table names for `OBJECT_ID`.
 
 The generated T-SQL first verifies database-level CDC is enabled, then validates all source tables, existing capture-instance assignments, and per-table capture-instance limits before it enables any missing instances. Existing matching instances are skipped. It calls `sys.sp_cdc_enable_table` with `@role_name = NULL` and `@supports_net_changes = 0`.
 
