@@ -38,15 +38,23 @@ function Invoke-TestDocker {
 }
 
 function Invoke-TestSql {
+    [CmdletBinding(DefaultParameterSetName = 'SqlText')]
     param (
         [string]$Database = 'master',
-        [Parameter(Mandatory)][string]$Sql,
+        [Parameter(Mandatory, ParameterSetName = 'SqlText')][string]$Sql,
+        [Parameter(Mandatory, ParameterSetName = 'SqlFile')][string]$SqlFile,
         [int]$ExpectedError = 0
     )
-    $script:sqlFileNumber++
-    $fileName = "query-$($script:sqlFileNumber).sql"
-    $localFile = Join-Path $outputDirectory $fileName
-    [IO.File]::WriteAllText($localFile, "SET NOCOUNT ON;`nGO`n$Sql", [Text.UTF8Encoding]::new($false))
+    if ($PSCmdlet.ParameterSetName -eq 'SqlFile') {
+        $localFile = (Resolve-Path -LiteralPath $SqlFile).Path
+        $fileName = Split-Path $localFile -Leaf
+    }
+    else {
+        $script:sqlFileNumber++
+        $fileName = "query-$($script:sqlFileNumber).sql"
+        $localFile = Join-Path $outputDirectory $fileName
+        [IO.File]::WriteAllText($localFile, "SET NOCOUNT ON;`nGO`n$Sql", [Text.UTF8Encoding]::new($false))
+    }
     Invoke-TestDocker -DockerArguments @('cp', $localFile, "${containerName}:/tmp/$fileName") | Out-Null
     $output = & docker exec --env SQLCMDPASSWORD $containerName $script:sqlcmdPath `
         -S 'tcp:127.0.0.1,1433' -U sa -C -b -r 1 -l 15 -t 90 -f 65001 -h -1 -W -d $Database -i "/tmp/$fileName" 2>&1
@@ -150,7 +158,7 @@ try {
     Write-Host "PowerShell: $($PSVersionTable.PSVersion)"
 
     Invoke-TestSql -Sql 'CREATE DATABASE CdcRestaurant COLLATE Latin1_General_100_CI_AS; CREATE DATABASE CdcDisabled;' | Out-Null
-    Invoke-TestSql -Database CdcRestaurant -Sql ([IO.File]::ReadAllText($fixturePath)) | Out-Null
+    Invoke-TestSql -Database CdcRestaurant -SqlFile $fixturePath | Out-Null
     Invoke-TestSql -Database CdcRestaurant -Sql @'
 IF (SELECT COUNT(*) FROM sys.tables WHERE is_ms_shipped = 0) <> 23
     THROW 52000, 'Restaurant seed must create 23 tables.', 1;
