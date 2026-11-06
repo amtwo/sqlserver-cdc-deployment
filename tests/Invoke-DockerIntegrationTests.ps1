@@ -24,7 +24,7 @@ $containerName = "sqlserver-cdc-test-$runId"
 $networkName = "sqlserver-cdc-network-$runId"
 $containerCreated = $false
 $networkCreated = $false
-$script:sqlServerPort = $null
+$script:sqlServerAddress = $null
 $script:sqlFileNumber = 0
 $script:sqlcmdPath = $null
 $script:passed = [System.Collections.Generic.List[string]]::new()
@@ -80,7 +80,7 @@ function Invoke-TestCsvExport {
     $securePassword = ConvertTo-SecureString $env:MSSQL_SA_PASSWORD -AsPlainText -Force
     $credential = [System.Management.Automation.PSCredential]::new('sa', $securePassword)
     & (Join-Path $repoRoot 'Export-CdcConfigurationCsv.ps1') `
-        -ServerInstance "127.0.0.1,$script:sqlServerPort" `
+        -ServerInstance "$script:sqlServerAddress,1433" `
         -Database $Database `
         -OutputPath $OutputPath `
         -Credential $credential `
@@ -144,18 +144,18 @@ try {
     $networkCreated = $true
     Invoke-TestDocker -DockerArguments @(
         'create', '--name', $containerName, '--platform', 'linux/amd64', '--network', $networkName,
-        '--publish', '127.0.0.1::1433',
         '--label', 'io.amtwo.sqlserver-cdc-deployment.test=true',
         '--env', 'ACCEPT_EULA=Y', '--env', 'MSSQL_PID=Developer',
         '--env', 'MSSQL_AGENT_ENABLED=true', '--env', 'MSSQL_SA_PASSWORD', $Image
     ) | Out-Null
     $containerCreated = $true
     Invoke-TestDocker -DockerArguments @('start', $containerName) | Out-Null
-    $publishedEndpoint = Invoke-TestDocker -DockerArguments @('port', $containerName, '1433/tcp')
-    if ($publishedEndpoint.Trim() -notmatch '^127\.0\.0\.1:(\d+)$') {
-        throw "SQL Server port was not published on loopback as expected: $publishedEndpoint"
+    $script:sqlServerAddress = Invoke-TestDocker -DockerArguments @(
+        'inspect', '--format', '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}', $containerName
+    )
+    if ($script:sqlServerAddress.Trim() -notmatch '^\d{1,3}(\.\d{1,3}){3}$') {
+        throw "Could not resolve the SQL Server container address on the internal network: $script:sqlServerAddress"
     }
-    $script:sqlServerPort = [int]$Matches[1]
     foreach ($candidate in @('/opt/mssql-tools18/bin/sqlcmd', '/opt/mssql-tools/bin/sqlcmd')) {
         $toolOutput = & docker exec $containerName $candidate '-?' 2>&1
         if ($LASTEXITCODE -eq 0) { $script:sqlcmdPath = $candidate; break }

@@ -6,7 +6,7 @@ Run from a checkout using PowerShell 7 and a running **x64 Linux Docker engine**
 pwsh -NoProfile -File ./tests/Invoke-DockerIntegrationTests.ps1
 ```
 
-The script downloads the SQL Server 2022 Developer image, creates a uniquely named container with a random password, and waits for SQL Server to accept connections. SQL Server Agent is enabled for the change-capture check. The container uses a Docker internal network with a randomly assigned port published only on host loopback so the CSV exporter can be exercised from PowerShell. It has no external network access or mounted volumes. SQL checks run using `sqlcmd` inside the container, and the script removes its container and network in `finally`, including on failure.
+The script downloads the SQL Server 2022 Developer image, creates a uniquely named container with a random password, and waits for SQL Server to accept connections. SQL Server Agent is enabled for the change-capture check. The container uses a Docker internal network with no external network access or mounted volumes. The host reaches SQL Server through the container's private bridge address so the CSV exporter can be exercised from PowerShell without publishing a port. SQL checks run using `sqlcmd` inside the container, and the script removes its container and network in `finally`, including on failure.
 
 The default image is `mcr.microsoft.com/mssql/server:2022-latest`. To reproduce a particular image or check another SQL Server release with the same tools layout, pass `-Image` with an image tag or digest. Successful runs record `@@VERSION`, the image digest, PowerShell version, and passed checks in `obj/integration/<run-id>/results.json`. Generated manifests, SQL, query results, and server logs are retained beside it.
 
