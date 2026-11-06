@@ -127,58 +127,52 @@ $enableStatements = [System.Collections.Generic.List[string]]::new()
 
 # Resolve requested tables inside SQL Server so the capacity check follows
 # the target database's identifier collation and actual table identities.
-$requestedConfigurations = ($entries | ForEach-Object {
+$requestedConfigurationRows = @($entries | ForEach-Object {
     $schemaLiteral = ConvertTo-SqlUnicodeLiteral $_.SourceSchema
     $sourceLiteral = ConvertTo-SqlUnicodeLiteral $_.SourceName
     $captureLiteral = ConvertTo-SqlUnicodeLiteral $_.CaptureInstanceName
     "($schemaLiteral, $sourceLiteral, $captureLiteral)"
-}) -join ",`n                "
+})
+$requestedConfigurations = $requestedConfigurationRows -join ",`n                "
+$capacityConfigurations = $requestedConfigurationRows -join ",`n                        "
 $capacityErrorLiteral = ConvertTo-SqlUnicodeLiteral 'The requested CDC configuration exceeds the maximum of two capture instances for a source table.'
 
 $preflight.Add(@"
-IF EXISTS
-(
-    SELECT 1
-    FROM (VALUES
+IF EXISTS ( SELECT 1 FROM
+            (VALUES
                 $requestedConfigurations
-    ) AS requested(source_schema, source_name, capture_instance)
-    GROUP BY requested.capture_instance
-    HAVING COUNT(*) > 1
-)
+            ) AS requested(source_schema, source_name, capture_instance)
+            GROUP BY requested.capture_instance
+            HAVING COUNT(*) > 1
+          )
 BEGIN
     THROW 51004, N'The CSV configuration used to generate this script contains multiple capture instances with the same name. Capture instances must be unique under the target database collation.', 1;
 END;
 "@)
 
 $preflight.Add(@"
-IF EXISTS
-(
-    SELECT 1
-    FROM
-    (
-        SELECT requested.source_object_id,
-               SUM(CASE WHEN existing.object_id IS NULL THEN 1 ELSE 0 END) AS missing_instance_count
-        FROM
-        (
-            SELECT OBJECT_ID(QUOTENAME(requestedInput.source_schema) + N'.' + QUOTENAME(requestedInput.source_name), N'U') AS source_object_id,
-                   requestedInput.capture_instance
-            FROM (VALUES
-                $requestedConfigurations
-            ) AS requestedInput(source_schema, source_name, capture_instance)
-        ) AS requested
-        LEFT JOIN cdc.change_tables AS existing
-            ON existing.source_object_id = requested.source_object_id
-           AND existing.capture_instance = requested.capture_instance
-        WHERE requested.source_object_id IS NOT NULL
-        GROUP BY requested.source_object_id
-    ) AS planned
-    WHERE
-    (
-        SELECT COUNT(*)
-        FROM cdc.change_tables AS ct
-        WHERE ct.source_object_id = planned.source_object_id
-    ) + planned.missing_instance_count > 2
-)
+IF EXISTS ( SELECT 1 FROM
+            (
+                SELECT requested.source_object_id,
+                       SUM(CASE WHEN existing.object_id IS NULL THEN 1 ELSE 0 END) AS missing_instance_count
+                FROM
+                (
+                    SELECT OBJECT_ID(QUOTENAME(requestedInput.source_schema) + N'.' + QUOTENAME(requestedInput.source_name), N'U') AS source_object_id,
+                           requestedInput.capture_instance
+                    FROM (VALUES
+                        $capacityConfigurations
+                    ) AS requestedInput(source_schema, source_name, capture_instance)
+                ) AS requested
+                LEFT JOIN cdc.change_tables AS existing
+                    ON existing.source_object_id = requested.source_object_id
+                   AND existing.capture_instance = requested.capture_instance
+                WHERE requested.source_object_id IS NOT NULL
+                GROUP BY requested.source_object_id
+            ) AS planned
+            WHERE ( SELECT COUNT(*) FROM cdc.change_tables AS ct
+                    WHERE ct.source_object_id = planned.source_object_id
+                  ) + planned.missing_instance_count > 2
+          )
 BEGIN
     THROW 51003, $capacityErrorLiteral, 1;
 END;
@@ -198,13 +192,10 @@ BEGIN
     THROW 51001, $sourceErrorMessageLiteral, 1;
 END;
 
-IF EXISTS
-(
-    SELECT 1
-    FROM cdc.change_tables AS ct
-    WHERE ct.capture_instance = $captureLiteral
-      AND ct.source_object_id <> OBJECT_ID($qualifiedExpression, N'U')
-)
+IF EXISTS ( SELECT 1 FROM cdc.change_tables AS ct
+            WHERE ct.capture_instance = $captureLiteral
+              AND ct.source_object_id <> OBJECT_ID($qualifiedExpression, N'U')
+          )
 BEGIN
     THROW 51002, $captureErrorMessageLiteral, 1;
 END;
@@ -212,13 +203,10 @@ END;
 "@)
 
     $enableStatements.Add(@"
-IF NOT EXISTS
-(
-    SELECT 1
-    FROM cdc.change_tables AS ct
-    WHERE ct.capture_instance = $captureLiteral
-      AND ct.source_object_id = OBJECT_ID($qualifiedExpression, N'U')
-)
+IF NOT EXISTS ( SELECT 1 FROM cdc.change_tables AS ct
+                WHERE ct.capture_instance = $captureLiteral
+                  AND ct.source_object_id = OBJECT_ID($qualifiedExpression, N'U')
+              )
 BEGIN
     EXEC sys.sp_cdc_enable_table
         @source_schema = $schemaLiteral,
@@ -245,13 +233,10 @@ This script intentionally does not enable CDC for the database.
 */
 SET NOCOUNT ON;
 
-IF NOT EXISTS
-(
-    SELECT 1
-    FROM sys.databases AS d
-    WHERE d.name = DB_NAME()
-      AND d.is_cdc_enabled = 1
-)
+IF NOT EXISTS ( SELECT 1 FROM sys.databases AS d
+                WHERE d.name = DB_NAME()
+                  AND d.is_cdc_enabled = 1
+              )
 BEGIN
     THROW 51000, N'CDC is not enabled for the current database. Refusing to configure capture instances; verify the deployment target.', 1;
 END;
