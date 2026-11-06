@@ -1,0 +1,27 @@
+name: SQL Server integration
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sqlserver:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Test generated SQL against SQL Server in Docker
+        shell: pwsh
+        run: ./tests/Invoke-DockerIntegrationTests.ps1
+      - name: Save generated SQL, results, and database logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sqlserver-integration-results
+          path: obj/integration/
+          if-no-files-found: ignore
