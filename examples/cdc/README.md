@@ -10,6 +10,10 @@ The `.sql` files are literal generator output. Regenerate them instead of editin
 them by hand. CI compares their bytes with fresh output, including encoding and
 line endings.
 
+Matching `.cleanup.sql` files demonstrate `-DropUnlistedCaptureInstances`. These
+scripts disable every unlisted capture instance across the target database,
+deleting its change table and captured history before enabling missing instances.
+
 Regenerate both SQL examples from the repository root using PowerShell 7:
 
 ```powershell
@@ -17,6 +21,10 @@ foreach ($dataset in @('restaurant', 'library')) {
     ./New-CdcConfigurationScript.ps1 `
         -CsvPath "./examples/cdc/$dataset-sample-database.csv" `
         -OutputPath "./examples/cdc/$dataset-sample-database.sql"
+    ./New-CdcConfigurationScript.ps1 `
+        -CsvPath "./examples/cdc/$dataset-sample-database.csv" `
+        -OutputPath "./examples/cdc/$dataset-sample-database.cleanup.sql" `
+        -DropUnlistedCaptureInstances
 }
 ```
 

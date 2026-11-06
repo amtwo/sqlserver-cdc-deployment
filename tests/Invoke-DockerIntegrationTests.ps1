@@ -24,6 +24,7 @@ $containerName = "sqlserver-cdc-test-$runId"
 $containerCreated = $false
 $script:sqlFileNumber = 0
 $script:sqlcmdPath = $null
+$script:lockBlockerSessionId = $null
 $script:passed = [System.Collections.Generic.List[string]]::new()
 $savedSaPassword = $env:MSSQL_SA_PASSWORD
 $savedSqlcmdPassword = $env:SQLCMDPASSWORD
@@ -43,7 +44,8 @@ function Invoke-TestSql {
         [string]$Database = 'master',
         [Parameter(Mandatory, ParameterSetName = 'SqlText')][string]$Sql,
         [Parameter(Mandatory, ParameterSetName = 'SqlFile')][string]$SqlFile,
-        [int]$ExpectedError = 0
+        [int]$ExpectedError = 0,
+        [switch]$ExpectedLockTimeout
     )
     if ($PSCmdlet.ParameterSetName -eq 'SqlFile') {
         $localFile = (Resolve-Path -LiteralPath $SqlFile).Path
@@ -66,6 +68,11 @@ function Invoke-TestSql {
             throw "Expected SQL error $ExpectedError, received exit code ${exitCode}: $text"
         }
     }
+    elseif ($ExpectedLockTimeout) {
+        if ($exitCode -eq 0 -or $text -notmatch '(?i)(1222|lock request time out period exceeded)') {
+            throw "Expected a SQL Server lock timeout, received exit code ${exitCode}: $text"
+        }
+    }
     elseif ($exitCode -ne 0) {
         throw "SQL failed in ${Database}: $text"
     }
@@ -73,11 +80,12 @@ function Invoke-TestSql {
 }
 
 function New-TestManifestSql {
-    param ([object[]]$Rows, [string]$Name)
+    param ([object[]]$Rows, [string]$Name, [switch]$DropUnlistedCaptureInstances, [int]$LockTimeout = 5000)
     $csvPath = Join-Path $outputDirectory "$Name.csv"
     $sqlPath = Join-Path $outputDirectory "$Name.sql"
     $Rows | Export-Csv -LiteralPath $csvPath -NoTypeInformation -Encoding utf8
-    & (Join-Path $repoRoot 'New-CdcConfigurationScript.ps1') -CsvPath $csvPath -OutputPath $sqlPath | Out-Null
+    & (Join-Path $repoRoot 'New-CdcConfigurationScript.ps1') -CsvPath $csvPath -OutputPath $sqlPath `
+        -DropUnlistedCaptureInstances:$DropUnlistedCaptureInstances -LockTimeout $LockTimeout | Out-Null
     return [IO.File]::ReadAllText($sqlPath)
 }
 
@@ -95,8 +103,8 @@ FROM cdc.change_tables ORDER BY capture_instance;
 }
 
 function Assert-Unchanged {
-    param ([string]$Before)
-    if ((Get-CaptureSnapshot) -ne $Before) { throw 'A rejected manifest changed CDC configuration.' }
+    param ([string]$Before, [string]$Database = 'CdcRestaurant')
+    if ((Get-CaptureSnapshot -Database $Database) -ne $Before) { throw 'A rejected manifest changed CDC configuration.' }
 }
 
 function Complete-Test {
@@ -298,6 +306,159 @@ END CATCH;
     }
     Complete-Test 'Target-collation capture-instance collisions fail before any changes'
 
+    Invoke-TestSql -Sql 'CREATE DATABASE CdcCleanup COLLATE Latin1_General_100_CI_AS;' | Out-Null
+    Invoke-TestSql -Database CdcCleanup -Sql @'
+CREATE TABLE dbo.Stuff (id int PRIMARY KEY);
+CREATE TABLE dbo.Omitted (id int PRIMARY KEY);
+INSERT dbo.Omitted VALUES (42);
+EXEC sys.sp_cdc_enable_db;
+EXEC sys.sp_cdc_enable_table @source_schema=N'dbo', @source_name=N'Stuff', @role_name=NULL, @capture_instance=N'dbo_stuff', @supports_net_changes=0;
+EXEC sys.sp_cdc_enable_table @source_schema=N'dbo', @source_name=N'Stuff', @role_name=NULL, @capture_instance=N'dbo_stuff_2', @supports_net_changes=0;
+EXEC sys.sp_cdc_enable_table @source_schema=N'dbo', @source_name=N'Omitted', @role_name=NULL, @capture_instance=N'legacy''capture', @supports_net_changes=0;
+'@ | Out-Null
+    $rotationRows = @((New-TestRow Stuff dbo_stuff_2), (New-TestRow Stuff dbo_stuff_3))
+    $defaultRotation = New-TestManifestSql -Name default-rotation -Rows $rotationRows
+    if ($defaultRotation.Contains('sys.sp_cdc_disable_table')) { throw 'Default generation unexpectedly contains cleanup.' }
+    $before = Get-CaptureSnapshot -Database CdcCleanup
+    Invoke-TestSql -Database CdcCleanup -Sql $defaultRotation -ExpectedError 51003 | Out-Null
+    Assert-Unchanged $before -Database CdcCleanup
+    Complete-Test 'Default mode preserves unlisted instances and rejects occupied slots'
+
+    $lockTimeoutSql = New-TestManifestSql -Name lock-timeout -Rows $rotationRows -DropUnlistedCaptureInstances -LockTimeout 500
+    $lockTimeoutProbe = $lockTimeoutSql.Replace(
+        'SET LOCK_TIMEOUT 500;',
+        "SET LOCK_TIMEOUT 500;`nIF @@LOCK_TIMEOUT <> 500 THROW 52000, N'Configured lock timeout is not active for this session.', 1;"
+    )
+    if ($lockTimeoutProbe -ceq $lockTimeoutSql) { throw 'Unable to insert the session lock-timeout assertion.' }
+    $before = Get-CaptureSnapshot -Database CdcCleanup
+    $blockerSql = "BEGIN TRAN; SELECT COUNT(*) FROM cdc.dbo_stuff_CT WITH (TABLOCKX, HOLDLOCK); WAITFOR DELAY '00:02:00'; ROLLBACK;"
+    Invoke-TestDocker -DockerArguments @('exec', '-d', '--env', 'SQLCMDPASSWORD', $containerName, $script:sqlcmdPath,
+        '-S', 'tcp:127.0.0.1,1433', '-U', 'sa', '-C', '-b', '-d', 'CdcCleanup', '-Q', $blockerSql) | Out-Null
+    $blockerReady = $false
+    $blockerDeadline = [DateTime]::UtcNow.AddSeconds(20)
+    do {
+        $blockerSession = Invoke-TestSql -Database CdcCleanup -Sql "SELECT TOP (1) request_session_id FROM sys.dm_tran_locks WHERE resource_database_id=DB_ID() AND resource_associated_entity_id=OBJECT_ID(N'cdc.dbo_stuff_CT') AND request_mode=N'X' AND request_status=N'GRANT' AND request_session_id <> @@SPID;"
+        $blockerReady = -not [string]::IsNullOrWhiteSpace($blockerSession)
+        if ($blockerReady) { $script:lockBlockerSessionId = [int]$blockerSession.Trim() }
+        if ($blockerReady) { break }
+        Start-Sleep -Milliseconds 200
+    } while ([DateTime]::UtcNow -lt $blockerDeadline)
+    if (-not $blockerReady) { throw 'The disposable blocker did not acquire an exclusive lock on the CDC change table.' }
+    try {
+        Invoke-TestSql -Database CdcCleanup -Sql $lockTimeoutProbe -ExpectedLockTimeout | Out-Null
+        Assert-Unchanged $before -Database CdcCleanup
+        Complete-Test 'A blocked CDC cleanup fails at the configured lock timeout without changing capture instances'
+    }
+    finally {
+        try { Invoke-TestSql -Database CdcCleanup -Sql "KILL $script:lockBlockerSessionId;" | Out-Null }
+        catch { Write-Warning "Unable to stop the disposable lock-blocker session; the owned test container will be removed: $_" }
+        $script:lockBlockerSessionId = $null
+    }
+
+    $rotationSql = New-TestManifestSql -Name cleanup-rotation -Rows $rotationRows -DropUnlistedCaptureInstances
+    if ($rotationSql.Contains("N'dbo_stuff'")) { throw 'Cleanup SQL explicitly embeds the removed capture name.' }
+    if ($rotationSql.IndexOf('sys.sp_cdc_disable_table') -gt $rotationSql.IndexOf('sys.sp_cdc_enable_table')) { throw 'Cleanup is after creation.' }
+    Invoke-TestSql -Database CdcDisabled -Sql $rotationSql -ExpectedError 51000 | Out-Null
+    Complete-Test 'Cleanup mode also refuses a CDC-disabled target'
+
+    foreach ($case in @(
+        @{ Name = 'cleanup-missing'; Error = 51001; Rows = @((New-TestRow Stuff dbo_stuff_2), (New-TestRow Missing missing_capture)) },
+        @{ Name = 'cleanup-conflict'; Error = 51002; Rows = @((New-TestRow Stuff "legacy'capture")) },
+        @{ Name = 'cleanup-cdc-source'; Error = 51007; Rows = @((New-TestRow change_tables invalid_cdc_source cdc)) },
+        @{ Name = 'cleanup-over-capacity'; Error = 51003; Rows = @((New-TestRow Stuff new_one), (New-TestRow stuff new_two), (New-TestRow Stuff new_three)) }
+    )) {
+        $invalidSql = New-TestManifestSql -Name $case.Name -Rows $case.Rows -DropUnlistedCaptureInstances
+        Invoke-TestSql -Database CdcCleanup -Sql $invalidSql -ExpectedError $case.Error | Out-Null
+        Assert-Unchanged $before -Database CdcCleanup
+    }
+    Complete-Test 'Invalid cleanup manifests fail before dropping any existing instance'
+
+    $retainedBefore = Invoke-TestSql -Database CdcCleanup -Sql "SELECT object_id, CONVERT(varchar(33), create_date, 126) FROM cdc.change_tables WHERE capture_instance=N'dbo_stuff_2';"
+    Invoke-TestSql -Database CdcCleanup -Sql $rotationSql | Out-Null
+    Invoke-TestSql -Database CdcCleanup -Sql @'
+IF (SELECT COUNT(*) FROM cdc.change_tables) <> 2
+   OR NOT EXISTS (SELECT 1 FROM cdc.change_tables WHERE capture_instance=N'dbo_stuff_2')
+   OR NOT EXISTS (SELECT 1 FROM cdc.change_tables WHERE capture_instance=N'dbo_stuff_3')
+    THROW 52000, 'Cleanup did not replace the obsolete instance at full capacity.', 1;
+IF NOT EXISTS (SELECT 1 FROM dbo.Omitted WHERE id=42)
+   OR EXISTS (SELECT 1 FROM sys.tables WHERE object_id=OBJECT_ID(N'dbo.Omitted') AND is_tracked_by_cdc=1)
+    THROW 52000, 'Omitted-table cleanup changed source data or retained its instance.', 1;
+'@ | Out-Null
+    $retainedAfter = Invoke-TestSql -Database CdcCleanup -Sql "SELECT object_id, CONVERT(varchar(33), create_date, 126) FROM cdc.change_tables WHERE capture_instance=N'dbo_stuff_2';"
+    if ($retainedAfter -cne $retainedBefore) { throw 'Cleanup recreated a retained instance.' }
+    Complete-Test 'Generic database-wide cleanup frees a slot and preserves retained instances and source data'
+
+    $before = Get-CaptureSnapshot -Database CdcCleanup
+    Invoke-TestSql -Database CdcCleanup -Sql $rotationSql | Out-Null
+    Assert-Unchanged $before -Database CdcCleanup
+    Complete-Test 'Repeating cleanup mode preserves the desired instances'
+
+    $replaceBothSql = New-TestManifestSql -Name replace-both -Rows @((New-TestRow Stuff dbo_stuff_4), (New-TestRow Stuff dbo_stuff_5)) -DropUnlistedCaptureInstances
+    Invoke-TestSql -Database CdcCleanup -Sql $replaceBothSql | Out-Null
+    Invoke-TestSql -Database CdcCleanup -Sql "IF (SELECT COUNT(*) FROM cdc.change_tables WHERE capture_instance IN (N'dbo_stuff_4', N'dbo_stuff_5')) <> 2 OR (SELECT COUNT(*) FROM cdc.change_tables) <> 2 THROW 52000, 'Replacing both occupied instances failed.', 1;" | Out-Null
+    Complete-Test 'Both occupied slots can be replaced in one deployment'
+
+    $removeRowSql = New-TestManifestSql -Name remove-row -Rows @((New-TestRow Stuff dbo_stuff_5)) -DropUnlistedCaptureInstances
+    Invoke-TestSql -Database CdcCleanup -Sql $removeRowSql | Out-Null
+    Invoke-TestSql -Database CdcCleanup -Sql "IF (SELECT COUNT(*) FROM cdc.change_tables) <> 1 OR NOT EXISTS (SELECT 1 FROM cdc.change_tables WHERE capture_instance=N'dbo_stuff_5') THROW 52000, 'Removing a CSV row did not drop the omitted instance.', 1;" | Out-Null
+    Complete-Test 'Removing a row removes its capture instance on the next deployment'
+
+    $emptyCsv = Join-Path $outputDirectory 'empty.csv'
+    $emptySqlPath = Join-Path $outputDirectory 'empty.sql'
+    [IO.File]::WriteAllText($emptyCsv, "SourceSchema,SourceName,CaptureInstanceName`n")
+    & (Join-Path $repoRoot 'New-CdcConfigurationScript.ps1') -CsvPath $emptyCsv -OutputPath $emptySqlPath -DropUnlistedCaptureInstances | Out-Null
+    $emptySql = [IO.File]::ReadAllText($emptySqlPath)
+    Invoke-TestSql -Database CdcCleanup -Sql $emptySql | Out-Null
+    Invoke-TestSql -Database CdcCleanup -Sql $emptySql | Out-Null
+    Invoke-TestSql -Database CdcCleanup -Sql @'
+IF EXISTS (SELECT 1 FROM cdc.change_tables)
+   OR NOT EXISTS (SELECT 1 FROM sys.databases WHERE database_id=DB_ID() AND is_cdc_enabled=1)
+   OR OBJECT_ID(N'dbo.Stuff', N'U') IS NULL
+    THROW 52000, 'Empty desired configuration must remove instances while retaining database CDC and source tables.', 1;
+'@ | Out-Null
+    Complete-Test 'Header-only cleanup removes all instances and is repeatable without disabling database CDC'
+
+    Invoke-TestSql -Database CdcCleanup -Sql @'
+EXEC sys.sp_cdc_enable_table @source_schema=N'dbo', @source_name=N'Stuff', @role_name=NULL, @capture_instance=N'all', @supports_net_changes=0;
+EXEC sys.sp_cdc_enable_table @source_schema=N'dbo', @source_name=N'Stuff', @role_name=NULL, @capture_instance=N'all_keep', @supports_net_changes=0;
+'@ | Out-Null
+    $reservedSql = New-TestManifestSql -Name reserved-all -Rows @((New-TestRow Stuff all_keep)) -DropUnlistedCaptureInstances
+    $before = Get-CaptureSnapshot -Database CdcCleanup
+    Invoke-TestSql -Database CdcCleanup -Sql $reservedSql -ExpectedError 51006 | Out-Null
+    Assert-Unchanged $before -Database CdcCleanup
+    Invoke-TestSql -Database CdcCleanup -Sql $emptySql | Out-Null
+    Invoke-TestSql -Database CdcCleanup -Sql "IF EXISTS (SELECT 1 FROM cdc.change_tables) THROW 52000, 'Header-only cleanup failed with a reserved-name instance.', 1;" | Out-Null
+    Complete-Test 'Reserved all instance cannot accidentally remove a retained instance'
+
+    foreach ($case in @(
+        @{ Database = 'CdcReservedCS'; Collation = 'Latin1_General_100_CS_AS'; Capture = 'ALL' },
+        @{ Database = 'CdcReservedAI'; Collation = 'Latin1_General_100_CI_AI'; Capture = 'áll' }
+    )) {
+        Invoke-TestSql -Sql "CREATE DATABASE $($case.Database) COLLATE $($case.Collation);" | Out-Null
+        Invoke-TestSql -Database $case.Database -Sql @"
+CREATE TABLE dbo.Probe (id int PRIMARY KEY);
+EXEC sys.sp_cdc_enable_db;
+EXEC sys.sp_cdc_enable_table @source_schema=N'dbo', @source_name=N'Probe', @role_name=NULL, @capture_instance=N'$($case.Capture)', @supports_net_changes=0;
+EXEC sys.sp_cdc_enable_table @source_schema=N'dbo', @source_name=N'Probe', @role_name=NULL, @capture_instance=N'keep_case', @supports_net_changes=0;
+"@ | Out-Null
+        $retainedBefore = Invoke-TestSql -Database $case.Database -Sql "SELECT object_id, CONVERT(varchar(33), create_date, 126) FROM cdc.change_tables WHERE capture_instance=N'keep_case';"
+        $caseCleanupSql = New-TestManifestSql -Name $case.Database -Rows @((New-TestRow Probe keep_case)) -DropUnlistedCaptureInstances
+        $probeSql = @"
+BEGIN TRY
+$caseCleanupSql
+END TRY
+BEGIN CATCH
+    IF ERROR_NUMBER() <> 51006 THROW;
+END CATCH;
+"@
+        Invoke-TestSql -Database $case.Database -Sql $probeSql | Out-Null
+        $retainedAfter = Invoke-TestSql -Database $case.Database -Sql "SELECT object_id, CONVERT(varchar(33), create_date, 126) FROM cdc.change_tables WHERE capture_instance=N'keep_case';"
+        if ($retainedAfter -cne $retainedBefore) { throw 'A selector variant removed and recreated a retained instance.' }
+        Invoke-TestSql -Database $case.Database -Sql $emptySql | Out-Null
+        Invoke-TestSql -Database $case.Database -Sql "IF EXISTS (SELECT 1 FROM cdc.change_tables) THROW 52000, 'Selector-variant cleanup left unlisted instances.', 1;" | Out-Null
+    }
+    Complete-Test 'Case and accent selector variants preserve retained captures and fully clean an empty desired set'
+
     [ordered]@{
         engine = $version; image = $digest; powershell = $PSVersionTable.PSVersion.ToString()
         fixtureUrl = $fixtureUrl; fixtureSha256 = $expectedHash; passed = @($script:passed)
@@ -306,6 +467,10 @@ END CATCH;
 }
 finally {
     if ($containerCreated) {
+        if ($script:lockBlockerSessionId) {
+            try { Invoke-TestSql -Database CdcCleanup -Sql "KILL $script:lockBlockerSessionId;" | Out-Null }
+            catch { Write-Warning "Unable to stop the disposable lock-blocker session; removing its owned test container: $_" }
+        }
         & docker logs $containerName *> (Join-Path $outputDirectory 'container.log')
         & docker cp "${containerName}:/var/opt/mssql/log/sqlagent.out" (Join-Path $outputDirectory 'sqlagent.log') 2>$null
         $cleanupOutput = & docker rm --force $containerName 2>&1

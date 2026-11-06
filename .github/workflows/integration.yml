@@ -23,6 +23,9 @@ jobs:
       - name: Verify clean and incremental DACPAC builds
         shell: pwsh
         run: ./tests/Test-DacpacBuild.ps1
+      - name: Verify cleanup input validation
+        shell: pwsh
+        run: ./tests/Test-GeneratorModes.ps1
       - name: Test generated SQL against SQL Server in Docker
         shell: pwsh
         run: ./tests/Invoke-DockerIntegrationTests.ps1

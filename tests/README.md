@@ -31,6 +31,11 @@ The seed creates 23 tables and loads data before the generated CDC configuration
 - Capture-instance names that collide under an accent-insensitive collation are rejected before changes, for both the same and different source tables.
 - Apostrophes and closing brackets in identifiers work with `QUOTENAME` inside `OBJECT_ID`.
 - Hostile CSV text remains data in both lookup expressions and error messages.
+- Cleanup frees occupied slots before replacement, drops instances on omitted tables, and preserves retained capture identities and source data.
+- Missing/conflicting/ineligible sources and excessive desired counts fail before cleanup.
+- Header-only cleanup removes every instance, retains database-level CDC, and is idempotent.
+- Reserved `all` selectors and their case/accent variants cannot silently remove retained instances or skip pending drops.
+- A held exclusive lock on a CDC change table causes cleanup to stop at the generated lock timeout without changing capture-instance metadata.
 
 This Docker suite exercises generated SQL directly after schema creation. The build checks below verify DACPAC packaging separately; DACPAC publish itself is not exercised.
 
@@ -42,13 +47,16 @@ These checks also run in CI and can run without Docker:
 
 ```powershell
 pwsh -NoProfile -File ./tests/Test-ExampleOutput.ps1
+pwsh -NoProfile -File ./tests/Test-GeneratorModes.ps1
 pwsh -NoProfile -File ./tests/Test-DacpacBuild.ps1
 ```
 
-The first compares both example SQL files with fresh output byte for byte, including encoding and line endings. It does not normalize or rewrite either file before comparing.
+The example check compares all four SQL files (default and cleanup modes) with fresh output byte for byte, including encoding and line endings. It does not normalize or rewrite either file before comparing. The generator-mode check verifies that valid header-only cleanup is accepted while empty/malformed inputs are rejected without overwriting output; it also checks the default and overridden lock-timeout values and rejects negative values.
 
-The second requires the .NET SDK (8 or later). It copies the small SQL project fixture into ignored test output, then builds with Microsoft.Build.Sql 2.3.0 using the README's generation hook. It opens the DACPAC to verify that the generated post-deployment script is present, changes a capture-instance name in the CSV, rebuilds, and verifies that the packaged SQL reflects the new value.
+The build check requires the .NET SDK (8 or later). It copies the small SQL project fixture into ignored test output, then builds with Microsoft.Build.Sql 2.3.0 using the README's generation hook. It opens the DACPAC to verify that the generated post-deployment script is present, changes a capture-instance name in the CSV, rebuilds, and verifies that the packaged SQL reflects the new value. A further build verifies that opt-in cleanup is packaged before enable calls and that `-LockTimeout` overrides the default in the packaged script.
 
 ## Windows PowerShell compatibility
 
 Both checked-in CSV examples generated SQL successfully with Windows PowerShell **5.1.26100.9711**, and their output matched PowerShell **7.6.9** after line-ending normalization. This was a generator compatibility check; the Docker integration suite runs with PowerShell 7.
+
+The default and overridden `-LockTimeout` values were also generated successfully with Windows PowerShell **5.1.26100.9711**. SQL Server runtime validation uses PowerShell 7.

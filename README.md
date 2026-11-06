@@ -34,7 +34,38 @@ The source schema and table identify the table passed to `sys.sp_cdc_enable_tabl
 
 The output directory must already exist. The generator validates the CSV and writes plain T-SQL as UTF-8 without a byte order mark, so the checks and procedure calls are directly reviewable. It escapes SQL string literals and uses `QUOTENAME` when building table names for `OBJECT_ID`.
 
+Generated scripts start with `SET LOCK_TIMEOUT 5000`, so SQL Server returns a lock-timeout error instead of waiting more than five seconds for a lock. This includes lock waits during CDC cleanup and capture-instance creation. The CDC capture process writes scanned log changes to the change tables, and disabling an instance drops its change table and functions; a lock timeout bounds waits if those operations contend. Override the limit in milliseconds with `-LockTimeout`, for example `-LockTimeout 30000` for 30 seconds; `0` fails immediately on a lock wait. Negative values are rejected. SQL Server keeps this setting for the remainder of the deployment connection.
+
 The generated T-SQL first verifies database-level CDC is enabled, then validates all source tables, existing capture-instance assignments, and per-table capture-instance limits before it enables any missing instances. Existing matching instances are skipped. It calls `sys.sp_cdc_enable_table` with `@role_name = NULL` and `@supports_net_changes = 0`.
+
+## Remove capture instances omitted from the CSV
+
+Use `-DropUnlistedCaptureInstances` to make the CSV authoritative for the **entire target database**:
+
+```powershell
+./New-CdcConfigurationScript.ps1 `
+    -CsvPath ./cdc/tables.csv `
+    -OutputPath ./obj/cdc-configuration.sql `
+    -DropUnlistedCaptureInstances
+```
+
+The generated script validates the configuration, then uses target metadata to disable every capture instance whose name is absent from the CSV, including instances on tables with no remaining CSV rows. Cleanup runs before the enable calls so obsolete instances free slots for replacements. Removed names are discovered at deployment time and are not embedded by the generator.
+
+For example, replacing `dbo_stuff` with `dbo_stuff_3` while retaining `dbo_stuff_2` produces this configuration:
+
+```csv
+SourceSchema,SourceName,CaptureInstanceName
+dbo,Stuff,dbo_stuff_2
+dbo,Stuff,dbo_stuff_3
+```
+
+The deployment removes `dbo_stuff`, preserves `dbo_stuff_2`, and creates `dbo_stuff_3`. To request two instances on the same table, include two rows with distinct capture names. More than two desired instances on one table fails validation before cleanup. A configured name already assigned to another table also fails before cleanup.
+
+Disabling an instance deletes its change table and captured history. New instances start fresh; history is not transferred. Source tables and database-level CDC remain in place. Without this flag, the script preserves unlisted instances.
+
+A valid **header-only** CSV with this flag removes all capture instances. An empty file, missing headers, or blank-valued data rows are rejected; a header-only CSV without the flag is also rejected. Cleanup occurs when the generated SQL is deployed, not while PowerShell builds it.
+
+SQL Server uses `all` as a selector for every instance on a table. Cleanup conservatively refuses to remove an unlisted name that compares to `all` after case folding under the target collation if another instance on that table must be retained. This covers case variants and, in accent-insensitive databases, accent variants. Keep that instance in the CSV or remove every instance for its table. This validation happens before any drops.
 
 ## Include it in a SQL project
 
@@ -55,6 +86,10 @@ Ensure the generated file exists before the SQL project is built. For a project 
 
 This target creates the output directory and runs before SQL compilation and packaging. Adapt the script and CSV paths to your repository layout. In CI/CD, run the generator before the SQL project build, package the resulting DACPAC, then publish it using your normal DACPAC deployment task. The post-deployment script runs after schema deployment, when the source tables should exist.
 
+To include authoritative cleanup in the DACPAC, append `-DropUnlistedCaptureInstances` to the target's `Exec` command.
+
+To override the lock timeout in that command, append `-LockTimeout 30000` (milliseconds).
+
 The generated script is deployment content. Keep it in the DACPAC build artifact and do not run it against a different database independently of the schema deployment.
 
 ## Example data
@@ -67,7 +102,7 @@ The restaurant example is exercised against the [Restaurant sample database](htt
 
 - CDC must already be enabled at database level on the deployment target.
 - This project never enables or disables database-level CDC.
-- The generated script checks configuration errors before its first enable call. As with any multi-step deployment, an unexpected SQL Server error during a later stored procedure call can still leave earlier successful capture-instance enables in place.
+- The generated script checks configuration errors before its first drop or enable call. An unexpected SQL Server error during later stored procedure calls can still leave earlier successful drops or enables in place.
 - Review generated SQL and test in a disposable database before production use.
 - SQL Server Agent and CDC capture jobs must be available and correctly configured for ongoing capture.
 
