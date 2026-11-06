@@ -10,7 +10,7 @@ Thanks for helping improve SQL Server CDC Deployment.
 
 ## Changes
 
-- Keep the generator compatible with PowerShell 5.1 and PowerShell 7 unless the project explicitly changes its support policy.
+- Develop and validate the generator using PowerShell 7 (`pwsh`). When also checking Windows PowerShell compatibility, report its version and the checks that passed.
 - Preserve safety behavior: database-level CDC must already be enabled; the script must fail before attempting CDC changes when it is not.
 - Escape SQL string literals, quote identifiers with `QUOTENAME`, and validate the full manifest before generating a deployment script.
 - Update the README and examples when command-line parameters or generated SQL behavior change.
@@ -20,7 +20,7 @@ Thanks for helping improve SQL Server CDC Deployment.
 
 Before opening a pull request:
 
-1. Parse the PowerShell file with the target PowerShell version.
+1. Parse the PowerShell file and run generation using PowerShell 7 (`pwsh`). Record any additional Windows PowerShell compatibility checks separately, including the version and results.
 2. Generate SQL from both checked-in CSV examples and inspect the output.
 3. If a disposable SQL Server is available, test deployment after schema creation, idempotent re-deployment, invalid source tables, capture-instance conflicts, and a target where CDC is disabled. Never test against production.
 4. Run `git diff --check`.

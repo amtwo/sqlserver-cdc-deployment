@@ -4,9 +4,11 @@ Generate an idempotent SQL script from a CSV manifest of source tables and captu
 
 ## Requirements
 
-- PowerShell 7 or Windows PowerShell 5.1
+- PowerShell 7 (`pwsh`), the development and primary execution target
 - A SQL Server database that already has CDC enabled
 - Source tables created by the schema deployment before the post-deployment script runs
+
+Windows PowerShell compatibility is recorded when tested, with the version and checks that passed. Development and required validation use PowerShell 7.
 
 If database-level CDC is not enabled, the generated script throws before it reads CDC metadata or attempts any change. It does not run `sys.sp_cdc_enable_db`. Treat that error as a target/configuration mismatch and verify the deployment database.
 
