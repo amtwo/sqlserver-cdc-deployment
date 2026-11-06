@@ -47,12 +47,13 @@ Add a SQLCMD include to the project's post-deployment script:
 Ensure the generated file exists before the SQL project is built. For a project that uses SDK-style `.sqlproj`, a pre-build target can generate it:
 
 ```xml
-<Target Name="GenerateCdcConfiguration" BeforeTargets="Build">
+<Target Name="GenerateCdcConfiguration" BeforeTargets="BeforeBuild">
+  <MakeDir Directories="$(MSBuildThisFileDirectory)obj" />
   <Exec Command="pwsh -NoProfile -File &quot;$(MSBuildThisFileDirectory)New-CdcConfigurationScript.ps1&quot; -CsvPath &quot;$(MSBuildThisFileDirectory)cdc\tables.csv&quot; -OutputPath &quot;$(MSBuildThisFileDirectory)obj\cdc-configuration.sql&quot;" />
 </Target>
 ```
 
-Create the `obj` directory before the target runs, or choose an existing output directory. Adapt the script and CSV paths to your repository layout. In CI/CD, run the generator before the SQL project build, package the resulting DACPAC, then publish it using your normal DACPAC deployment task. The post-deployment script runs after schema deployment, when the source tables should exist.
+This target creates the output directory and runs before SQL compilation and packaging. Adapt the script and CSV paths to your repository layout. In CI/CD, run the generator before the SQL project build, package the resulting DACPAC, then publish it using your normal DACPAC deployment task. The post-deployment script runs after schema deployment, when the source tables should exist.
 
 The generated script is deployment content. Keep it in the DACPAC build artifact and do not run it against a different database independently of the schema deployment.
 

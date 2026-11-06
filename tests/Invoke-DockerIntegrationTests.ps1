@@ -277,6 +277,27 @@ IF EXISTS
     Invoke-TestSql -Database CdcCaseSensitive -Sql "IF (SELECT COUNT(*) FROM cdc.change_tables) <> 4 THROW 52000, 'Distinct case-sensitive tables were combined.', 1;" | Out-Null
     Complete-Test 'Case-sensitive source tables have independent two-instance limits'
 
+    Invoke-TestSql -Sql 'CREATE DATABASE CdcAccentInsensitive COLLATE Latin1_General_100_CI_AI;' | Out-Null
+    Invoke-TestSql -Database CdcAccentInsensitive -Sql 'CREATE TABLE dbo.A (id int PRIMARY KEY); CREATE TABLE dbo.B (id int PRIMARY KEY); EXEC sys.sp_cdc_enable_db;' | Out-Null
+    foreach ($secondTable in @('A', 'B')) {
+        $collisionSql = New-TestManifestSql -Name "accent-collision-$secondTable" -Rows @(
+            (New-TestRow A cafe), (New-TestRow $secondTable 'café')
+        )
+        $probeSql = @"
+BEGIN TRY
+$collisionSql
+END TRY
+BEGIN CATCH
+    DECLARE @instance_count int = (SELECT COUNT(*) FROM cdc.change_tables);
+    PRINT N'Capture instances after rejected manifest: ' + CONVERT(nvarchar(10), @instance_count);
+    THROW;
+END CATCH;
+"@
+        Invoke-TestSql -Database CdcAccentInsensitive -Sql $probeSql -ExpectedError 51004 | Out-Null
+        Invoke-TestSql -Database CdcAccentInsensitive -Sql "IF EXISTS (SELECT 1 FROM cdc.change_tables) THROW 52000, 'Colliding manifest changed CDC configuration.', 1;" | Out-Null
+    }
+    Complete-Test 'Target-collation capture-instance collisions fail before any changes'
+
     [ordered]@{
         engine = $version; image = $digest; powershell = $PSVersionTable.PSVersion.ToString()
         fixtureUrl = $fixtureUrl; fixtureSha256 = $expectedHash; passed = @($script:passed)
