@@ -1,8 +1,20 @@
 # CDC CSV examples
 
 These CSVs show the input format expected by `New-CdcConfigurationScript.ps1`.
-They contain CDC configuration only; neither dataset is bundled here, and the
-CSV files do not create the source tables.
+Each CSV has a matching generated `.sql` file so you can inspect the deployment
+output. Both formats contain CDC configuration only; neither dataset is bundled
+here, and the SQL files require the source tables and database-level CDC to
+already exist.
+
+Regenerate both SQL examples from the repository root using PowerShell 7:
+
+```powershell
+foreach ($dataset in @('restaurant', 'library')) {
+    ./New-CdcConfigurationScript.ps1 `
+        -CsvPath "./examples/cdc/$dataset-sample-database.csv" `
+        -OutputPath "./examples/cdc/$dataset-sample-database.sql"
+}
+```
 
 ## Restaurant sample database
 

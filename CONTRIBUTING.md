@@ -6,7 +6,7 @@ Thanks for helping improve SQL Server CDC Deployment.
 
 - For a bug or feature idea, open an issue or discussion first when practical so the scope can be agreed before implementation.
 - Keep changes focused and preserve the documented input and output contract unless a change is intentional and documented.
-- Do not include downloaded sample database content. The examples in this repository are small CDC configuration manifests only.
+- Do not include downloaded sample database content. The examples in this repository contain CDC configuration manifests and their generated SQL only.
 
 ## Changes
 
