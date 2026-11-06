@@ -18,6 +18,12 @@ Path to a CSV file with SourceSchema, SourceName, and CaptureInstanceName column
 .PARAMETER OutputPath
 Path to the generated T-SQL file. The parent directory must already exist.
 
+.PARAMETER DropUnlistedCaptureInstances
+Include database-wide cleanup that disables capture instances absent from the
+CSV before enabling missing instances. Disabling an instance deletes its change
+table and captured history. The CSV is the complete desired configuration;
+a valid header-only CSV removes all capture instances in this mode.
+
 .EXAMPLE
 ./New-CdcConfigurationScript.ps1 `
     -CsvPath ./cdc/tables.csv `
@@ -37,7 +43,9 @@ param (
 
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
-    [string]$OutputPath
+    [string]$OutputPath,
+
+    [switch]$DropUnlistedCaptureInstances
 )
 
 Set-StrictMode -Version Latest
@@ -71,12 +79,24 @@ if ([string]::Equals(
 }
 
 $rows = @(Import-Csv -LiteralPath $resolvedCsvPath)
-if ($rows.Count -eq 0) {
+if ($rows.Count -eq 0 -and -not $DropUnlistedCaptureInstances) {
     throw "CSV contains no data rows: $resolvedCsvPath"
 }
 
 $requiredColumns = @('SourceSchema', 'SourceName', 'CaptureInstanceName')
-$actualColumns = @($rows[0].PSObject.Properties.Name)
+if ($rows.Count -eq 0) {
+    # Import-Csv returns no objects for a header-only manifest. Parse a dummy
+    # row solely to inspect its headers; never treat that row as configuration.
+    $csvText = [IO.File]::ReadAllText($resolvedCsvPath)
+    if ([string]::IsNullOrWhiteSpace($csvText)) {
+        throw 'CSV must contain the SourceSchema, SourceName, and CaptureInstanceName header, even when no capture instances are desired.'
+    }
+    $headerProbe = @(ConvertFrom-Csv -InputObject ($csvText + "`n__cdc_header_probe__"))
+    $actualColumns = if ($headerProbe.Count -eq 1) { @($headerProbe[0].PSObject.Properties.Name) } else { @() }
+}
+else {
+    $actualColumns = @($rows[0].PSObject.Properties.Name)
+}
 foreach ($column in $requiredColumns) {
     if ($column -notin $actualColumns) {
         throw "CSV is missing required column '$column'. Required columns: $($requiredColumns -join ', ')."
@@ -137,7 +157,8 @@ $requestedConfigurations = $requestedConfigurationRows -join ",`n               
 $capacityConfigurations = $requestedConfigurationRows -join ",`n                        "
 $capacityErrorLiteral = ConvertTo-SqlUnicodeLiteral 'The requested CDC configuration exceeds the maximum of two capture instances for a source table.'
 
-$preflight.Add(@"
+if ($entries.Count -gt 0) {
+    $preflight.Add(@"
 IF EXISTS ( SELECT 1 FROM
             (VALUES
                 $requestedConfigurations
@@ -150,7 +171,25 @@ BEGIN
 END;
 "@)
 
-$preflight.Add(@"
+if ($DropUnlistedCaptureInstances) {
+    # Old, unlisted instances will be removed before enabling replacements.
+    # Validate the desired count rather than counting the slots they occupy.
+    $preflight.Add(@"
+IF EXISTS ( SELECT 1 FROM
+            (VALUES
+                $requestedConfigurations
+            ) AS requested(source_schema, source_name, capture_instance)
+            WHERE OBJECT_ID(QUOTENAME(requested.source_schema) + N'.' + QUOTENAME(requested.source_name), N'U') IS NOT NULL
+            GROUP BY OBJECT_ID(QUOTENAME(requested.source_schema) + N'.' + QUOTENAME(requested.source_name), N'U')
+            HAVING COUNT(*) > 2
+          )
+BEGIN
+    THROW 51003, $capacityErrorLiteral, 1;
+END;
+"@)
+}
+else {
+    $preflight.Add(@"
 IF EXISTS ( SELECT 1 FROM
             (
                 SELECT requested.source_object_id,
@@ -177,6 +216,8 @@ BEGIN
     THROW 51003, $capacityErrorLiteral, 1;
 END;
 "@)
+}
+}
 
 foreach ($entry in $entries) {
     $schemaLiteral = ConvertTo-SqlUnicodeLiteral $entry.SourceSchema
@@ -218,11 +259,72 @@ END;
 "@)
 }
 
+$cleanupBody = ''
+if ($DropUnlistedCaptureInstances) {
+    $cleanupPredicate = ''
+    if ($entries.Count -gt 0) {
+        $requestedCaptureInstances = ($entries | ForEach-Object {
+            "($(ConvertTo-SqlUnicodeLiteral $_.CaptureInstanceName))"
+        }) -join ",`n                            "
+        $cleanupPredicate = @"
+    WHERE NOT EXISTS ( SELECT 1 FROM
+                       (VALUES
+                            $requestedCaptureInstances
+                       ) AS configured(capture_instance)
+                       WHERE configured.capture_instance = ct.capture_instance
+                     )
+"@
+        $cleanupPredicate = "`n" + $cleanupPredicate
+    }
+    $cleanupBody = @"
+-- Disable database capture instances absent from the CSV before creating replacements.
+-- Disabling an instance deletes its change table and captured history.
+DECLARE @cdc_source_schema sysname,
+        @cdc_source_name sysname,
+        @cdc_capture_instance sysname,
+        @cdc_disable_result int;
+
+DECLARE @cdc_unlisted_instances TABLE
+(
+    source_schema sysname NOT NULL,
+    source_name sysname NOT NULL,
+    capture_instance sysname NOT NULL
+);
+
+INSERT INTO @cdc_unlisted_instances (source_schema, source_name, capture_instance)
+    SELECT s.name, t.name, ct.capture_instance
+    FROM cdc.change_tables AS ct
+    JOIN sys.tables AS t ON t.object_id = ct.source_object_id
+    JOIN sys.schemas AS s ON s.schema_id = t.schema_id$cleanupPredicate;
+
+WHILE EXISTS ( SELECT 1 FROM @cdc_unlisted_instances )
+BEGIN
+    SELECT TOP (1)
+        @cdc_source_schema = source_schema,
+        @cdc_source_name = source_name,
+        @cdc_capture_instance = capture_instance
+    FROM @cdc_unlisted_instances
+    ORDER BY capture_instance;
+
+    EXEC @cdc_disable_result = sys.sp_cdc_disable_table
+        @source_schema = @cdc_source_schema,
+        @source_name = @cdc_source_name,
+        @capture_instance = @cdc_capture_instance;
+    IF @cdc_disable_result <> 0
+        THROW 51005, N'Failed to disable an unlisted CDC capture instance. Stopping before enabling new instances.', 1;
+
+    DELETE FROM @cdc_unlisted_instances
+    WHERE capture_instance = @cdc_capture_instance;
+END;
+"@
+    $cleanupBody += "`n`n"
+}
+
 $configurationBody = @"
 -- Validate every configured table and capture-instance name before making changes.
 $($preflight -join "`n")
 
--- Enable only missing capture instances.
+$($cleanupBody)-- Enable only missing capture instances.
 $($enableStatements -join "`n")
 "@
 

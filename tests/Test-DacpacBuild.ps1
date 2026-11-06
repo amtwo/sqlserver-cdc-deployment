@@ -42,3 +42,16 @@ foreach ($revision in @('restaurant_orders', 'restaurant_orders_build_v2')) {
     }
     Write-Host "PASS: DACPAC packages the current $revision manifest."
 }
+
+[xml]$project = [IO.File]::ReadAllText($projectPath)
+$command = $project.Project.Target.Exec.GetAttribute('Command')
+$project.Project.Target.Exec.SetAttribute('Command', "$command -DropUnlistedCaptureInstances")
+$project.Save($projectPath)
+& dotnet build $projectPath --nologo
+if ($LASTEXITCODE -ne 0) { throw 'DACPAC cleanup-mode build failed.' }
+$postDeploy = Get-PackagedPostDeploy
+if (-not $postDeploy.Contains('sys.sp_cdc_disable_table') -or
+    $postDeploy.IndexOf('sys.sp_cdc_disable_table') -gt $postDeploy.IndexOf('sys.sp_cdc_enable_table')) {
+    throw 'DACPAC is missing cleanup before capture-instance creation.'
+}
+Write-Host 'PASS: DACPAC packages opt-in cleanup before creation.'
