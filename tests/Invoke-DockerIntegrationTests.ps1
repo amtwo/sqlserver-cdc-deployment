@@ -46,7 +46,7 @@ function Invoke-TestSql {
     $script:sqlFileNumber++
     $fileName = "query-$($script:sqlFileNumber).sql"
     $localFile = Join-Path $outputDirectory $fileName
-    [IO.File]::WriteAllText($localFile, "SET NOCOUNT ON;`n$Sql", [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($localFile, "SET NOCOUNT ON;`nGO`n$Sql", [Text.UTF8Encoding]::new($false))
     Invoke-TestDocker -DockerArguments @('cp', $localFile, "${containerName}:/tmp/$fileName") | Out-Null
     $output = & docker exec --env SQLCMDPASSWORD $containerName $script:sqlcmdPath `
         -S 'tcp:127.0.0.1,1433' -U sa -C -b -r 1 -l 15 -t 90 -f 65001 -h -1 -W -d $Database -i "/tmp/$fileName" 2>&1
