@@ -60,7 +60,7 @@ The generated script is deployment content. Keep it in the DACPAC build artifact
 
 The CSV examples under [`examples/cdc`](examples/cdc/) demonstrate the manifest format. They contain configuration rows only; the sample database data and seed scripts are not included.
 
-The restaurant example is the selected fixture for development/testing with the [Restaurant sample database](https://databasesample.com/datasets/restaurant-sample-database). The CSV has been used to verify SQL generation; database-side CDC deployment was not runtime-verified in this environment. That synthetic dataset is licensed CC0 1.0 and provides a small SQL Server seed option. The [Library sample database](https://databasesample.com/datasets/library-sample-database) is an alternate CC0 relational example. Verify schemas and table names against the version you download before using either manifest.
+The restaurant example is exercised against the [Restaurant sample database](https://databasesample.com/datasets/restaurant-sample-database) in the Docker integration suite. The tests download its SQL Server seed, load its schema and data, apply generated configuration, and verify that an order update is captured. That synthetic dataset is licensed CC0 1.0 and is not bundled with this project. The [Library sample database](https://databasesample.com/datasets/library-sample-database) is an alternate CC0 relational example. Verify schemas and table names against the version you download before using either manifest.
 
 ## Safety and limitations
 
