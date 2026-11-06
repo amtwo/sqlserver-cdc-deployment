@@ -23,6 +23,7 @@ New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
 $containerName = "sqlserver-cdc-test-$runId"
 $containerCreated = $false
 $script:sqlFileNumber = 0
+$script:sqlcmdPath = $null
 $script:passed = [System.Collections.Generic.List[string]]::new()
 $savedSaPassword = $env:MSSQL_SA_PASSWORD
 $savedSqlcmdPassword = $env:SQLCMDPASSWORD
@@ -47,7 +48,7 @@ function Invoke-TestSql {
     $localFile = Join-Path $outputDirectory $fileName
     [IO.File]::WriteAllText($localFile, "SET NOCOUNT ON;`n$Sql", [Text.UTF8Encoding]::new($false))
     Invoke-TestDocker -DockerArguments @('cp', $localFile, "${containerName}:/tmp/$fileName") | Out-Null
-    $output = & docker exec --env SQLCMDPASSWORD $containerName /opt/mssql-tools18/bin/sqlcmd `
+    $output = & docker exec --env SQLCMDPASSWORD $containerName $script:sqlcmdPath `
         -S localhost -U sa -C -b -r 1 -l 15 -t 90 -f 65001 -h -1 -W -d $Database -i "/tmp/$fileName" 2>&1
     $exitCode = $LASTEXITCODE
     $text = ($output -join [Environment]::NewLine).Trim()
@@ -112,6 +113,7 @@ try {
 
     $env:MSSQL_SA_PASSWORD = "Cdc!$([guid]::NewGuid().ToString('N'))aA7"
     $env:SQLCMDPASSWORD = $env:MSSQL_SA_PASSWORD
+    Write-Host "Creating isolated container from $Image..."
     Invoke-TestDocker -DockerArguments @(
         'create', '--name', $containerName, '--platform', 'linux/amd64', '--network', 'none',
         '--label', 'io.amtwo.sqlserver-cdc-deployment.test=true',
@@ -120,18 +122,26 @@ try {
     ) | Out-Null
     $containerCreated = $true
     Invoke-TestDocker -DockerArguments @('start', $containerName) | Out-Null
+    foreach ($candidate in @('/opt/mssql-tools18/bin/sqlcmd', '/opt/mssql-tools/bin/sqlcmd')) {
+        $toolOutput = & docker exec $containerName $candidate '-?' 2>&1
+        if ($LASTEXITCODE -eq 0) { $script:sqlcmdPath = $candidate; break }
+    }
+    if (-not $script:sqlcmdPath) { throw "No working sqlcmd in the test image: $toolOutput" }
+    Write-Host 'Waiting for SQL Server to accept connections...'
 
     $ready = $false
     $deadline = [DateTime]::UtcNow.AddMinutes(2)
     do {
-        & docker exec --env SQLCMDPASSWORD $containerName /opt/mssql-tools18/bin/sqlcmd `
-            -S localhost -U sa -C -b -l 2 -Q 'SELECT 1' *> $null
-        if ($LASTEXITCODE -eq 0) { $ready = $true; break }
+        $readinessOutput = & docker exec --env SQLCMDPASSWORD $containerName $script:sqlcmdPath `
+            -S localhost -U sa -C -b -l 2 -Q 'SELECT 1' 2>&1
+        $readinessExitCode = $LASTEXITCODE
+        ($readinessOutput -join [Environment]::NewLine) | Set-Content (Join-Path $outputDirectory 'readiness.log')
+        if ($readinessExitCode -eq 0) { $ready = $true; break }
         $state = Invoke-TestDocker -DockerArguments @('inspect', '--format', '{{.State.Running}}', $containerName)
         if ($state.Trim() -ne 'true') { throw 'SQL Server container exited before becoming ready.' }
         Start-Sleep -Seconds 2
     } while ([DateTime]::UtcNow -lt $deadline)
-    if (-not $ready) { throw 'SQL Server did not become ready within two minutes.' }
+    if (-not $ready) { throw "SQL Server readiness failed within two minutes: $readinessOutput" }
 
     $version = Invoke-TestSql -Sql 'SELECT @@VERSION;'
     $digest = Invoke-TestDocker -DockerArguments @('image', 'inspect', $Image, '--format', '{{json .RepoDigests}}')
@@ -139,7 +149,7 @@ try {
     Write-Host "Image: $digest"
     Write-Host "PowerShell: $($PSVersionTable.PSVersion)"
 
-    Invoke-TestSql -Sql 'CREATE DATABASE CdcRestaurant; CREATE DATABASE CdcDisabled;' | Out-Null
+    Invoke-TestSql -Sql 'CREATE DATABASE CdcRestaurant COLLATE Latin1_General_100_CI_AS; CREATE DATABASE CdcDisabled;' | Out-Null
     Invoke-TestSql -Database CdcRestaurant -Sql ([IO.File]::ReadAllText($fixturePath)) | Out-Null
     Invoke-TestSql -Database CdcRestaurant -Sql @'
 IF (SELECT COUNT(*) FROM sys.tables WHERE is_ms_shipped = 0) <> 23
@@ -166,6 +176,18 @@ IF EXISTS (SELECT 1 FROM sys.databases WHERE database_id = DB_ID() AND is_cdc_en
     Invoke-TestSql -Database CdcRestaurant -Sql @'
 IF (SELECT COUNT(*) FROM cdc.change_tables) <> 3
     THROW 52000, 'Expected three restaurant capture instances.', 1;
+IF EXISTS
+(
+    SELECT capture_instance, source_object_id
+    FROM (VALUES
+        (N'restaurant_orders', OBJECT_ID(N'dbo.orders')),
+        (N'restaurant_order_items', OBJECT_ID(N'dbo.order_items')),
+        (N'restaurant_payments', OBJECT_ID(N'dbo.payments'))
+    ) AS expected(capture_instance, source_object_id)
+    EXCEPT
+    SELECT capture_instance, source_object_id FROM cdc.change_tables
+)
+    THROW 52000, 'Restaurant capture-instance mappings do not match the manifest.', 1;
 '@ | Out-Null
     Complete-Test 'Restaurant seed schema and data followed by generated CDC deployment'
     $before = Get-CaptureSnapshot

@@ -22,10 +22,10 @@ Before opening a pull request:
 
 1. Parse the PowerShell file and run generation using PowerShell 7 (`pwsh`). Record any additional Windows PowerShell compatibility checks separately, including the version and results.
 2. Generate SQL from both checked-in CSV examples and inspect the output.
-3. If a disposable SQL Server is available, test deployment after schema creation, idempotent re-deployment, invalid source tables, capture-instance conflicts, and a target where CDC is disabled. Never test against production.
+3. Run `pwsh -NoProfile -File ./tests/Invoke-DockerIntegrationTests.ps1` using an x64 Linux Docker engine, or verify the GitHub Actions integration job. See [the test guide](tests/README.md) for setup and coverage. Never test against production.
 4. Run `git diff --check`.
 
-A SQL Edge run is useful smoke coverage but is not a substitute for supported SQL Server versions; note compatibility gaps in the PR.
+The integration workflow runs on an x64 Linux runner so ARM64 contributors can get real SQL Server coverage. Report the engine version, image digest, and result when citing a run.
 
 ## Pull requests
 

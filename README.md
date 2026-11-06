@@ -70,6 +70,10 @@ The restaurant example is the selected fixture for development/testing with the 
 - Review generated SQL and test in a disposable database before production use.
 - SQL Server Agent and CDC capture jobs must be available and correctly configured for ongoing capture.
 
+## Integration testing
+
+Run `pwsh -NoProfile -File ./tests/Invoke-DockerIntegrationTests.ps1` with an x64 Linux Docker engine. The test script builds a disposable SQL Server Developer environment, loads the external restaurant dataset, and exercises generated SQL against the running database. The same script runs in GitHub Actions. See [the integration test guide](tests/README.md) for coverage, prerequisites, and retained results.
+
 ## License
 
 BSD 3-Clause. See [LICENSE](LICENSE).
