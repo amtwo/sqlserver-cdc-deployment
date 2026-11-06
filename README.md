@@ -22,7 +22,7 @@ dbo,orders,orders_capture
 sales,Invoice,invoice_capture
 ```
 
-The source schema and table identify the table passed to `sys.sp_cdc_enable_table`; the capture instance is the desired name. Each capture instance name must be unique in the manifest. SQL Server permits at most two capture instances per source table.
+The source schema and table identify the table passed to `sys.sp_cdc_enable_table`; the capture instance is the desired name. Each capture instance name must be unique in the manifest under the target database's collation, including its case and accent comparison rules. SQL Server permits at most two capture instances per source table.
 
 ## Generate the deployment script
 
@@ -32,7 +32,7 @@ The source schema and table identify the table passed to `sys.sp_cdc_enable_tabl
     -OutputPath ./obj/cdc-configuration.sql
 ```
 
-The output directory must already exist. The generator validates the CSV and writes UTF-8 without a byte order mark. It escapes SQL string literals and uses `QUOTENAME` when building table names for `OBJECT_ID`.
+The output directory must already exist. The generator validates the CSV and writes plain T-SQL as UTF-8 without a byte order mark, so the checks and procedure calls are directly reviewable. It escapes SQL string literals and uses `QUOTENAME` when building table names for `OBJECT_ID`.
 
 The generated T-SQL first verifies database-level CDC is enabled, then validates all source tables, existing capture-instance assignments, and per-table capture-instance limits before it enables any missing instances. Existing matching instances are skipped. It calls `sys.sp_cdc_enable_table` with `@role_name = NULL` and `@supports_net_changes = 0`.
 
@@ -47,12 +47,13 @@ Add a SQLCMD include to the project's post-deployment script:
 Ensure the generated file exists before the SQL project is built. For a project that uses SDK-style `.sqlproj`, a pre-build target can generate it:
 
 ```xml
-<Target Name="GenerateCdcConfiguration" BeforeTargets="Build">
+<Target Name="GenerateCdcConfiguration" BeforeTargets="BeforeBuild">
+  <MakeDir Directories="$(MSBuildThisFileDirectory)obj" />
   <Exec Command="pwsh -NoProfile -File &quot;$(MSBuildThisFileDirectory)New-CdcConfigurationScript.ps1&quot; -CsvPath &quot;$(MSBuildThisFileDirectory)cdc\tables.csv&quot; -OutputPath &quot;$(MSBuildThisFileDirectory)obj\cdc-configuration.sql&quot;" />
 </Target>
 ```
 
-Create the `obj` directory before the target runs, or choose an existing output directory. Adapt the script and CSV paths to your repository layout. In CI/CD, run the generator before the SQL project build, package the resulting DACPAC, then publish it using your normal DACPAC deployment task. The post-deployment script runs after schema deployment, when the source tables should exist.
+This target creates the output directory and runs before SQL compilation and packaging. Adapt the script and CSV paths to your repository layout. In CI/CD, run the generator before the SQL project build, package the resulting DACPAC, then publish it using your normal DACPAC deployment task. The post-deployment script runs after schema deployment, when the source tables should exist.
 
 The generated script is deployment content. Keep it in the DACPAC build artifact and do not run it against a different database independently of the schema deployment.
 

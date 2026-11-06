@@ -21,9 +21,10 @@ Thanks for helping improve SQL Server CDC Deployment.
 Before opening a pull request:
 
 1. Parse the PowerShell file and run generation using PowerShell 7 (`pwsh`). Record any additional Windows PowerShell compatibility checks separately, including the version and results.
-2. Generate SQL from both checked-in CSV examples and inspect the output.
+2. Run `pwsh -NoProfile -File ./tests/Test-ExampleOutput.ps1`. Both SQL examples must match fresh output byte for byte, including encoding and line endings. Regenerate examples after changing the generator; do not edit generated SQL by hand.
 3. Run `pwsh -NoProfile -File ./tests/Invoke-DockerIntegrationTests.ps1` using an x64 Linux Docker engine, or verify the GitHub Actions integration job. See [the test guide](tests/README.md) for setup and coverage. Never test against production.
 4. Run `git diff --check`.
+5. Run `pwsh -NoProfile -File ./tests/Test-DacpacBuild.ps1` with the .NET SDK installed to verify clean and incremental SQL project packaging.
 
 The integration workflow runs on an x64 Linux runner so ARM64 contributors can get real SQL Server coverage. Report the engine version, image digest, and result when citing a run.
 

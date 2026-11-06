@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.Build.Sql/2.3.0">
+  <PropertyGroup>
+    <DSP>Microsoft.Data.Tools.Schema.Sql.Sql160DatabaseSchemaProvider</DSP>
+  </PropertyGroup>
+  <ItemGroup>
+    <PostDeploy Include="PostDeploy.sql" />
+    <Build Remove="PostDeploy.sql" />
+  </ItemGroup>
+  <Target Name="GenerateCdcConfiguration" BeforeTargets="BeforeBuild">
+    <MakeDir Directories="$(MSBuildThisFileDirectory)obj" />
+    <Exec Command="pwsh -NoProfile -File &quot;$(MSBuildThisFileDirectory)New-CdcConfigurationScript.ps1&quot; -CsvPath &quot;$(MSBuildThisFileDirectory)cdc\tables.csv&quot; -OutputPath &quot;$(MSBuildThisFileDirectory)obj\cdc-configuration.sql&quot;" />
+  </Target>
+</Project>

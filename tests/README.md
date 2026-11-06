@@ -28,12 +28,26 @@ The seed creates 23 tables and loads data before the generated CDC configuration
 - A second capture instance succeeds; a third is rejected.
 - Multiple planned instances are counted together, including case aliases in a case-insensitive database.
 - Distinct case-sensitive tables get independent capture-instance limits.
+- Capture-instance names that collide under an accent-insensitive collation are rejected before changes, for both the same and different source tables.
 - Apostrophes and closing brackets in identifiers work with `QUOTENAME` inside `OBJECT_ID`.
 - Hostile CSV text remains data in both lookup expressions and error messages.
 
-This suite exercises generated SQL directly after schema creation. DACPAC build and publish integration is documented in the project README and is not exercised by this suite.
+This Docker suite exercises generated SQL directly after schema creation. The build checks below verify DACPAC packaging separately; DACPAC publish itself is not exercised.
 
 The test environment has run SQL Server **2022 Developer, RTM-CU27-GDR (16.0.4305.5)** with PowerShell **7.6.9** on an x64 Linux GitHub runner. Each successful run's `results.json` records the exact image digest and checks that passed.
+
+## Example and build checks
+
+These checks also run in CI and can run without Docker:
+
+```powershell
+pwsh -NoProfile -File ./tests/Test-ExampleOutput.ps1
+pwsh -NoProfile -File ./tests/Test-DacpacBuild.ps1
+```
+
+The first compares both example SQL files with fresh output byte for byte, including encoding and line endings. It does not normalize or rewrite either file before comparing.
+
+The second requires the .NET SDK (8 or later). It copies the small SQL project fixture into ignored test output, then builds with Microsoft.Build.Sql 2.3.0 using the README's generation hook. It opens the DACPAC to verify that the generated post-deployment script is present, changes a capture-instance name in the CSV, rebuilds, and verifies that the packaged SQL reflects the new value.
 
 ## Windows PowerShell compatibility
 

@@ -17,6 +17,12 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+      - name: Verify examples are literal generator output
+        shell: pwsh
+        run: ./tests/Test-ExampleOutput.ps1
+      - name: Verify clean and incremental DACPAC builds
+        shell: pwsh
+        run: ./tests/Test-DacpacBuild.ps1
       - name: Test generated SQL against SQL Server in Docker
         shell: pwsh
         run: ./tests/Invoke-DockerIntegrationTests.ps1

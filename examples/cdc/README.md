@@ -6,6 +6,10 @@ output. Both formats contain CDC configuration only; neither dataset is bundled
 here, and the SQL files require the source tables and database-level CDC to
 already exist.
 
+The `.sql` files are literal generator output. Regenerate them instead of editing
+them by hand. CI compares their bytes with fresh output, including encoding and
+line endings.
+
 Regenerate both SQL examples from the repository root using PowerShell 7:
 
 ```powershell
