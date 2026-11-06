@@ -21,7 +21,10 @@ $runId = [guid]::NewGuid().ToString('N')
 $outputDirectory = Join-Path $repoRoot "obj/integration/$runId"
 New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
 $containerName = "sqlserver-cdc-test-$runId"
+$networkName = "sqlserver-cdc-network-$runId"
 $containerCreated = $false
+$networkCreated = $false
+$script:sqlServerPort = $null
 $script:sqlFileNumber = 0
 $script:sqlcmdPath = $null
 $script:passed = [System.Collections.Generic.List[string]]::new()
@@ -70,6 +73,18 @@ function Invoke-TestSql {
         throw "SQL failed in ${Database}: $text"
     }
     return $text
+}
+
+function Invoke-TestCsvExport {
+    param ([string]$Database, [string]$OutputPath)
+    $securePassword = ConvertTo-SecureString $env:MSSQL_SA_PASSWORD -AsPlainText -Force
+    $credential = [System.Management.Automation.PSCredential]::new('sa', $securePassword)
+    & (Join-Path $repoRoot 'Export-CdcConfigurationCsv.ps1') `
+        -ServerInstance "127.0.0.1,$script:sqlServerPort" `
+        -Database $Database `
+        -OutputPath $OutputPath `
+        -Credential $credential `
+        -TrustServerCertificate | Out-Null
 }
 
 function New-TestManifestSql {
@@ -123,13 +138,24 @@ try {
     $env:SQLCMDPASSWORD = $env:MSSQL_SA_PASSWORD
     Write-Host "Creating isolated container from $Image..."
     Invoke-TestDocker -DockerArguments @(
-        'create', '--name', $containerName, '--platform', 'linux/amd64', '--network', 'none',
+        'network', 'create', '--internal',
+        '--label', 'io.amtwo.sqlserver-cdc-deployment.test=true', $networkName
+    ) | Out-Null
+    $networkCreated = $true
+    Invoke-TestDocker -DockerArguments @(
+        'create', '--name', $containerName, '--platform', 'linux/amd64', '--network', $networkName,
+        '--publish', '127.0.0.1::1433',
         '--label', 'io.amtwo.sqlserver-cdc-deployment.test=true',
         '--env', 'ACCEPT_EULA=Y', '--env', 'MSSQL_PID=Developer',
         '--env', 'MSSQL_AGENT_ENABLED=true', '--env', 'MSSQL_SA_PASSWORD', $Image
     ) | Out-Null
     $containerCreated = $true
     Invoke-TestDocker -DockerArguments @('start', $containerName) | Out-Null
+    $publishedEndpoint = Invoke-TestDocker -DockerArguments @('port', $containerName, '1433/tcp')
+    if ($publishedEndpoint.Trim() -notmatch '^127\.0\.0\.1:(\d+)$') {
+        throw "SQL Server port was not published on loopback as expected: $publishedEndpoint"
+    }
+    $script:sqlServerPort = [int]$Matches[1]
     foreach ($candidate in @('/opt/mssql-tools18/bin/sqlcmd', '/opt/mssql-tools/bin/sqlcmd')) {
         $toolOutput = & docker exec $containerName $candidate '-?' 2>&1
         if ($LASTEXITCODE -eq 0) { $script:sqlcmdPath = $candidate; break }
@@ -198,6 +224,38 @@ IF EXISTS
     THROW 52000, 'Restaurant capture-instance mappings do not match the manifest.', 1;
 '@ | Out-Null
     Complete-Test 'Restaurant seed schema and data followed by generated CDC deployment'
+
+    $exportPath = Join-Path $outputDirectory 'restaurant-export.csv'
+    Invoke-TestCsvExport -Database CdcRestaurant -OutputPath $exportPath
+    $exportedRows = @(Import-Csv -LiteralPath $exportPath | Sort-Object SourceSchema, SourceName, CaptureInstanceName)
+    $expectedRows = @(Import-Csv -LiteralPath (Join-Path $repoRoot 'examples/cdc/restaurant-sample-database.csv') | Sort-Object SourceSchema, SourceName, CaptureInstanceName)
+    if ($exportedRows.Count -ne $expectedRows.Count) { throw 'The CDC CSV export returned an unexpected number of capture instances.' }
+    for ($index = 0; $index -lt $expectedRows.Count; $index++) {
+        foreach ($column in @('SourceSchema', 'SourceName', 'CaptureInstanceName')) {
+            if ($exportedRows[$index].$column -cne $expectedRows[$index].$column) {
+                throw "The CDC CSV export returned an unexpected $column at sorted row $index."
+            }
+        }
+    }
+    $exportBytes = [IO.File]::ReadAllBytes($exportPath)
+    if ($exportBytes.Length -ge 3 -and $exportBytes[0] -eq 0xEF -and $exportBytes[1] -eq 0xBB -and $exportBytes[2] -eq 0xBF) {
+        throw 'The CDC CSV export unexpectedly contains a UTF-8 byte order mark.'
+    }
+    Complete-Test 'Read-only CDC CSV export matches the configured table and capture-instance mappings'
+
+    $disabledDatabaseOutput = Join-Path $outputDirectory 'cdc-disabled.csv'
+    try {
+        Invoke-TestCsvExport -Database master -OutputPath $disabledDatabaseOutput
+        throw 'The CDC CSV export unexpectedly succeeded for a database with CDC disabled.'
+    }
+    catch {
+        if ($_.Exception.Message -notmatch 'CDC is not enabled for database') { throw }
+    }
+    if (Test-Path -LiteralPath $disabledDatabaseOutput) {
+        throw 'The CDC CSV exporter wrote output for a database with CDC disabled.'
+    }
+    Complete-Test 'CDC CSV export rejects a database with CDC disabled without writing a file'
+
     $before = Get-CaptureSnapshot
     Invoke-TestSql -Database CdcRestaurant -Sql $restaurantSql | Out-Null
     Assert-Unchanged $before
@@ -310,6 +368,10 @@ finally {
         & docker cp "${containerName}:/var/opt/mssql/log/sqlagent.out" (Join-Path $outputDirectory 'sqlagent.log') 2>$null
         $cleanupOutput = & docker rm --force $containerName 2>&1
         if ($LASTEXITCODE -ne 0) { Write-Warning "Unable to remove owned test container ${containerName}: $cleanupOutput" }
+    }
+    if ($networkCreated) {
+        $networkCleanupOutput = & docker network rm $networkName 2>&1
+        if ($LASTEXITCODE -ne 0) { Write-Warning "Unable to remove owned test network ${networkName}: $networkCleanupOutput" }
     }
     $env:MSSQL_SA_PASSWORD = $savedSaPassword
     $env:SQLCMDPASSWORD = $savedSqlcmdPassword
