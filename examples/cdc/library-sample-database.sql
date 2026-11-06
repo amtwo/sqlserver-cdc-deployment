@@ -19,6 +19,20 @@ END;
 IF EXISTS
 (
     SELECT 1
+    FROM (VALUES
+                (N'dbo', N'loans', N'library_loans'),
+                (N'dbo', N'fines', N'library_fines'),
+                (N'dbo', N'audit_logs', N'library_audit_logs')
+    ) AS requested(source_schema, source_name, capture_instance)
+    GROUP BY requested.capture_instance
+    HAVING COUNT(*) > 1
+)
+BEGIN
+    THROW 51004, N'Capture instance names must be unique under the target database collation.', 1;
+END;
+IF EXISTS
+(
+    SELECT 1
     FROM
     (
         SELECT requested.source_object_id,

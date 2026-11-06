@@ -22,7 +22,7 @@ dbo,orders,orders_capture
 sales,Invoice,invoice_capture
 ```
 
-The source schema and table identify the table passed to `sys.sp_cdc_enable_table`; the capture instance is the desired name. Each capture instance name must be unique in the manifest. SQL Server permits at most two capture instances per source table.
+The source schema and table identify the table passed to `sys.sp_cdc_enable_table`; the capture instance is the desired name. Each capture instance name must be unique in the manifest under the target database's collation, including its case and accent comparison rules. SQL Server permits at most two capture instances per source table.
 
 ## Generate the deployment script
 

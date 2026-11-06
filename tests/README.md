@@ -28,6 +28,7 @@ The seed creates 23 tables and loads data before the generated CDC configuration
 - A second capture instance succeeds; a third is rejected.
 - Multiple planned instances are counted together, including case aliases in a case-insensitive database.
 - Distinct case-sensitive tables get independent capture-instance limits.
+- Capture-instance names that collide under an accent-insensitive collation are rejected before changes, for both the same and different source tables.
 - Apostrophes and closing brackets in identifiers work with `QUOTENAME` inside `OBJECT_ID`.
 - Hostile CSV text remains data in both lookup expressions and error messages.
 

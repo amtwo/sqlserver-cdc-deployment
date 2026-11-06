@@ -19,6 +19,20 @@ END;
 IF EXISTS
 (
     SELECT 1
+    FROM (VALUES
+                (N'dbo', N'orders', N'restaurant_orders'),
+                (N'dbo', N'order_items', N'restaurant_order_items'),
+                (N'dbo', N'payments', N'restaurant_payments')
+    ) AS requested(source_schema, source_name, capture_instance)
+    GROUP BY requested.capture_instance
+    HAVING COUNT(*) > 1
+)
+BEGIN
+    THROW 51004, N'Capture instance names must be unique under the target database collation.', 1;
+END;
+IF EXISTS
+(
+    SELECT 1
     FROM
     (
         SELECT requested.source_object_id,

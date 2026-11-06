@@ -139,6 +139,21 @@ $preflight.Add(@"
 IF EXISTS
 (
     SELECT 1
+    FROM (VALUES
+                $requestedConfigurations
+    ) AS requested(source_schema, source_name, capture_instance)
+    GROUP BY requested.capture_instance
+    HAVING COUNT(*) > 1
+)
+BEGIN
+    THROW 51004, N'Capture instance names must be unique under the target database collation.', 1;
+END;
+"@)
+
+$preflight.Add(@"
+IF EXISTS
+(
+    SELECT 1
     FROM
     (
         SELECT requested.source_object_id,

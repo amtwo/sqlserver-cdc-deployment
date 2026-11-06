@@ -279,7 +279,7 @@ IF EXISTS
 
     Invoke-TestSql -Sql 'CREATE DATABASE CdcAccentInsensitive COLLATE Latin1_General_100_CI_AI;' | Out-Null
     Invoke-TestSql -Database CdcAccentInsensitive -Sql 'CREATE TABLE dbo.A (id int PRIMARY KEY); CREATE TABLE dbo.B (id int PRIMARY KEY); EXEC sys.sp_cdc_enable_db;' | Out-Null
-    foreach ($secondTable in @('A', 'B')) {
+    foreach ($secondTable in @('B', 'A')) {
         $collisionSql = New-TestManifestSql -Name "accent-collision-$secondTable" -Rows @(
             (New-TestRow A cafe), (New-TestRow $secondTable 'café')
         )
