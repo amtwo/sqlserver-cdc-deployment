@@ -43,7 +43,8 @@ function Invoke-TestSql {
         [string]$Database = 'master',
         [Parameter(Mandatory, ParameterSetName = 'SqlText')][string]$Sql,
         [Parameter(Mandatory, ParameterSetName = 'SqlFile')][string]$SqlFile,
-        [int]$ExpectedError = 0
+        [int]$ExpectedError = 0,
+        [switch]$ExpectedLockTimeout
     )
     if ($PSCmdlet.ParameterSetName -eq 'SqlFile') {
         $localFile = (Resolve-Path -LiteralPath $SqlFile).Path
@@ -66,6 +67,11 @@ function Invoke-TestSql {
             throw "Expected SQL error $ExpectedError, received exit code ${exitCode}: $text"
         }
     }
+    elseif ($ExpectedLockTimeout) {
+        if ($exitCode -eq 0 -or $text -notmatch '(?i)(1222|lock request time out period exceeded)') {
+            throw "Expected a SQL Server lock timeout, received exit code ${exitCode}: $text"
+        }
+    }
     elseif ($exitCode -ne 0) {
         throw "SQL failed in ${Database}: $text"
     }
@@ -73,12 +79,12 @@ function Invoke-TestSql {
 }
 
 function New-TestManifestSql {
-    param ([object[]]$Rows, [string]$Name, [switch]$DropUnlistedCaptureInstances)
+    param ([object[]]$Rows, [string]$Name, [switch]$DropUnlistedCaptureInstances, [int]$LockTimeout = 5000)
     $csvPath = Join-Path $outputDirectory "$Name.csv"
     $sqlPath = Join-Path $outputDirectory "$Name.sql"
     $Rows | Export-Csv -LiteralPath $csvPath -NoTypeInformation -Encoding utf8
     & (Join-Path $repoRoot 'New-CdcConfigurationScript.ps1') -CsvPath $csvPath -OutputPath $sqlPath `
-        -DropUnlistedCaptureInstances:$DropUnlistedCaptureInstances | Out-Null
+        -DropUnlistedCaptureInstances:$DropUnlistedCaptureInstances -LockTimeout $LockTimeout | Out-Null
     return [IO.File]::ReadAllText($sqlPath)
 }
 
@@ -316,6 +322,29 @@ EXEC sys.sp_cdc_enable_table @source_schema=N'dbo', @source_name=N'Omitted', @ro
     Invoke-TestSql -Database CdcCleanup -Sql $defaultRotation -ExpectedError 51003 | Out-Null
     Assert-Unchanged $before -Database CdcCleanup
     Complete-Test 'Default mode preserves unlisted instances and rejects occupied slots'
+
+    $blockerSql = "BEGIN TRAN; SELECT COUNT(*) FROM cdc.dbo_stuff_CT WITH (TABLOCKX, HOLDLOCK); WAITFOR DELAY '00:00:15'; ROLLBACK;"
+    Invoke-TestDocker -DockerArguments @('exec', '-d', '--env', 'SQLCMDPASSWORD', $containerName, $script:sqlcmdPath,
+        '-S', 'tcp:127.0.0.1,1433', '-U', 'sa', '-C', '-b', '-d', 'CdcCleanup', '-Q', $blockerSql) | Out-Null
+    $blockerReady = $false
+    $blockerDeadline = [DateTime]::UtcNow.AddSeconds(8)
+    do {
+        $blockerReady = [int](Invoke-TestSql -Database CdcCleanup -Sql "SELECT COUNT(*) FROM sys.dm_tran_locks WHERE resource_database_id=DB_ID() AND resource_associated_entity_id=OBJECT_ID(N'cdc.dbo_stuff_CT') AND request_mode=N'X' AND request_status=N'GRANT' AND request_session_id <> @@SPID;") -gt 0
+        if ($blockerReady) { break }
+        Start-Sleep -Milliseconds 200
+    } while ([DateTime]::UtcNow -lt $blockerDeadline)
+    if (-not $blockerReady) { throw 'The disposable blocker did not acquire an exclusive lock on the CDC change table.' }
+    $lockTimeoutSql = New-TestManifestSql -Name lock-timeout -Rows $rotationRows -DropUnlistedCaptureInstances -LockTimeout 500
+    $before = Get-CaptureSnapshot -Database CdcCleanup
+    Invoke-TestSql -Database CdcCleanup -Sql $lockTimeoutSql -ExpectedLockTimeout | Out-Null
+    Assert-Unchanged $before -Database CdcCleanup
+    Complete-Test 'A blocked CDC cleanup fails at the configured lock timeout without changing capture instances'
+    do {
+        $blockerReady = [int](Invoke-TestSql -Database CdcCleanup -Sql "SELECT COUNT(*) FROM sys.dm_tran_locks WHERE resource_database_id=DB_ID() AND resource_associated_entity_id=OBJECT_ID(N'cdc.dbo_stuff_CT') AND request_mode=N'X' AND request_status=N'GRANT' AND request_session_id <> @@SPID;") -gt 0
+        if (-not $blockerReady) { break }
+        Start-Sleep -Milliseconds 200
+    } while ([DateTime]::UtcNow -lt $blockerDeadline.AddSeconds(12))
+    if ($blockerReady) { throw 'The disposable lock blocker did not release its test lock.' }
 
     $rotationSql = New-TestManifestSql -Name cleanup-rotation -Rows $rotationRows -DropUnlistedCaptureInstances
     if ($rotationSql.Contains("N'dbo_stuff'")) { throw 'Cleanup SQL explicitly embeds the removed capture name.' }

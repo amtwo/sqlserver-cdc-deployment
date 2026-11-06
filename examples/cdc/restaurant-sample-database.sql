@@ -3,6 +3,7 @@ Generated CDC table configuration.
 This script intentionally does not enable CDC for the database.
 */
 SET NOCOUNT ON;
+SET LOCK_TIMEOUT 5000;
 
 IF NOT EXISTS ( SELECT 1 FROM sys.databases AS d
                 WHERE d.name = DB_NAME()

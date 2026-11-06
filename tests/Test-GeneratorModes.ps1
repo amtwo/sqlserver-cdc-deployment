@@ -36,3 +36,22 @@ if (-not $sql.Contains('sys.sp_cdc_disable_table') -or $sql.Contains('sys.sp_cdc
     throw 'Header-only cleanup must produce a disable-only script with no empty VALUES list.'
 }
 Write-Host 'PASS: a valid header-only manifest produces database-wide disable-only SQL.'
+
+$normalManifest = Join-Path $repoRoot 'examples/cdc/library-sample-database.csv'
+& $generator -CsvPath $normalManifest -OutputPath $outputPath | Out-Null
+$defaultSql = [IO.File]::ReadAllText($outputPath)
+if (-not $defaultSql.Contains('SET LOCK_TIMEOUT 5000;')) {
+    throw 'The default generated SQL must set a 5000 millisecond lock timeout.'
+}
+
+& $generator -CsvPath $normalManifest -OutputPath $outputPath -LockTimeout 1250 | Out-Null
+$overrideSql = [IO.File]::ReadAllText($outputPath)
+if (-not $overrideSql.Contains('SET LOCK_TIMEOUT 1250;')) {
+    throw 'The generated SQL did not use the requested lock timeout.'
+}
+
+$rejectedNegativeTimeout = $false
+try { & $generator -CsvPath $normalManifest -OutputPath $outputPath -LockTimeout -1 | Out-Null }
+catch { $rejectedNegativeTimeout = $true }
+if (-not $rejectedNegativeTimeout) { throw 'A negative lock timeout must be rejected.' }
+Write-Host 'PASS: the lock timeout defaults to 5000 milliseconds, accepts overrides, and rejects negative values.'

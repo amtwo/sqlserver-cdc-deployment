@@ -34,6 +34,8 @@ The source schema and table identify the table passed to `sys.sp_cdc_enable_tabl
 
 The output directory must already exist. The generator validates the CSV and writes plain T-SQL as UTF-8 without a byte order mark, so the checks and procedure calls are directly reviewable. It escapes SQL string literals and uses `QUOTENAME` when building table names for `OBJECT_ID`.
 
+Generated scripts start with `SET LOCK_TIMEOUT 5000`, so SQL Server returns a lock-timeout error instead of waiting more than five seconds for a lock. This includes lock waits during CDC cleanup and capture-instance creation. The CDC capture process writes scanned log changes to the change tables, and disabling an instance drops its change table and functions; a lock timeout bounds waits if those operations contend. Override the limit in milliseconds with `-LockTimeout`, for example `-LockTimeout 30000` for 30 seconds; `0` fails immediately on a lock wait. Negative values are rejected. SQL Server keeps this setting for the remainder of the deployment connection.
+
 The generated T-SQL first verifies database-level CDC is enabled, then validates all source tables, existing capture-instance assignments, and per-table capture-instance limits before it enables any missing instances. Existing matching instances are skipped. It calls `sys.sp_cdc_enable_table` with `@role_name = NULL` and `@supports_net_changes = 0`.
 
 ## Remove capture instances omitted from the CSV
@@ -85,6 +87,8 @@ Ensure the generated file exists before the SQL project is built. For a project 
 This target creates the output directory and runs before SQL compilation and packaging. Adapt the script and CSV paths to your repository layout. In CI/CD, run the generator before the SQL project build, package the resulting DACPAC, then publish it using your normal DACPAC deployment task. The post-deployment script runs after schema deployment, when the source tables should exist.
 
 To include authoritative cleanup in the DACPAC, append `-DropUnlistedCaptureInstances` to the target's `Exec` command.
+
+To override the lock timeout in that command, append `-LockTimeout 30000` (milliseconds).
 
 The generated script is deployment content. Keep it in the DACPAC build artifact and do not run it against a different database independently of the schema deployment.
 

@@ -37,6 +37,9 @@ foreach ($revision in @('restaurant_orders', 'restaurant_orders_build_v2')) {
     if (-not $postDeploy.Contains("@capture_instance = N'$revision'")) {
         throw "DACPAC is missing current generated configuration for $revision."
     }
+    if (-not $postDeploy.Contains('SET LOCK_TIMEOUT 5000;')) {
+        throw 'DACPAC is missing the generated default lock timeout.'
+    }
     if ($revision -eq 'restaurant_orders_build_v2' -and $postDeploy.Contains("@capture_instance = N'restaurant_orders'")) {
         throw 'DACPAC retained stale configuration after the CSV changed.'
     }
@@ -45,13 +48,14 @@ foreach ($revision in @('restaurant_orders', 'restaurant_orders_build_v2')) {
 
 [xml]$project = [IO.File]::ReadAllText($projectPath)
 $command = $project.Project.Target.Exec.GetAttribute('Command')
-$project.Project.Target.Exec.SetAttribute('Command', "$command -DropUnlistedCaptureInstances")
+$project.Project.Target.Exec.SetAttribute('Command', "$command -DropUnlistedCaptureInstances -LockTimeout 1250")
 $project.Save($projectPath)
 & dotnet build $projectPath --nologo
 if ($LASTEXITCODE -ne 0) { throw 'DACPAC cleanup-mode build failed.' }
 $postDeploy = Get-PackagedPostDeploy
 if (-not $postDeploy.Contains('sys.sp_cdc_disable_table') -or
-    $postDeploy.IndexOf('sys.sp_cdc_disable_table') -gt $postDeploy.IndexOf('sys.sp_cdc_enable_table')) {
+    $postDeploy.IndexOf('sys.sp_cdc_disable_table') -gt $postDeploy.IndexOf('sys.sp_cdc_enable_table') -or
+    -not $postDeploy.Contains('SET LOCK_TIMEOUT 1250;')) {
     throw 'DACPAC is missing cleanup before capture-instance creation.'
 }
-Write-Host 'PASS: DACPAC packages opt-in cleanup before creation.'
+Write-Host 'PASS: DACPAC packages opt-in cleanup before creation and the configured lock timeout.'

@@ -24,6 +24,10 @@ CSV before enabling missing instances. Disabling an instance deletes its change
 table and captured history. The CSV is the complete desired configuration;
 a valid header-only CSV removes all capture instances in this mode.
 
+.PARAMETER LockTimeout
+Set the SQL Server lock timeout in milliseconds. Defaults to 5000 milliseconds.
+Use 0 to fail immediately when a required lock is unavailable.
+
 .EXAMPLE
 ./New-CdcConfigurationScript.ps1 `
     -CsvPath ./cdc/tables.csv `
@@ -45,7 +49,10 @@ param (
     [ValidateNotNullOrEmpty()]
     [string]$OutputPath,
 
-    [switch]$DropUnlistedCaptureInstances
+    [switch]$DropUnlistedCaptureInstances,
+
+    [ValidateRange(0, [int]::MaxValue)]
+    [int]$LockTimeout = 5000
 )
 
 Set-StrictMode -Version Latest
@@ -368,6 +375,7 @@ Generated CDC table configuration.
 This script intentionally does not enable CDC for the database.
 */
 SET NOCOUNT ON;
+SET LOCK_TIMEOUT $LockTimeout;
 
 IF NOT EXISTS ( SELECT 1 FROM sys.databases AS d
                 WHERE d.name = DB_NAME()
