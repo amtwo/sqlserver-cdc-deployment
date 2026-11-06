@@ -63,6 +63,8 @@ Disabling an instance deletes its change table and captured history. New instanc
 
 A valid **header-only** CSV with this flag removes all capture instances. An empty file, missing headers, or blank-valued data rows are rejected; a header-only CSV without the flag is also rejected. Cleanup occurs when the generated SQL is deployed, not while PowerShell builds it.
 
+SQL Server interprets the capture-instance name `all` as every instance on a table. Cleanup refuses to remove an unlisted instance named `all` if another instance on that table must be retained. Keep that instance in the CSV or remove every instance for its table. This validation happens before any drops.
+
 ## Include it in a SQL project
 
 Add a SQLCMD include to the project's post-deployment script:

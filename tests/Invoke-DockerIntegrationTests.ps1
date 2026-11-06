@@ -326,6 +326,7 @@ EXEC sys.sp_cdc_enable_table @source_schema=N'dbo', @source_name=N'Omitted', @ro
     foreach ($case in @(
         @{ Name = 'cleanup-missing'; Error = 51001; Rows = @((New-TestRow Stuff dbo_stuff_2), (New-TestRow Missing missing_capture)) },
         @{ Name = 'cleanup-conflict'; Error = 51002; Rows = @((New-TestRow Stuff "legacy'capture")) },
+        @{ Name = 'cleanup-cdc-source'; Error = 51007; Rows = @((New-TestRow change_tables invalid_cdc_source cdc)) },
         @{ Name = 'cleanup-over-capacity'; Error = 51003; Rows = @((New-TestRow Stuff new_one), (New-TestRow stuff new_two), (New-TestRow Stuff new_three)) }
     )) {
         $invalidSql = New-TestManifestSql -Name $case.Name -Rows $case.Rows -DropUnlistedCaptureInstances

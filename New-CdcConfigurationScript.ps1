@@ -243,6 +243,19 @@ END;
 
 "@)
 
+    if ($DropUnlistedCaptureInstances) {
+        $sourceEligibilityErrorLiteral = ConvertTo-SqlUnicodeLiteral "The CSV configuration specifies a source table that cannot be enabled for CDC: $($entry.SourceSchema).$($entry.SourceName). CDC-schema and system tables are not supported."
+        $preflight.Add(@"
+IF EXISTS ( SELECT 1 FROM sys.tables AS t
+            WHERE t.object_id = OBJECT_ID($qualifiedExpression, N'U')
+              AND (t.schema_id = SCHEMA_ID(N'cdc') OR t.is_ms_shipped = 1)
+          )
+BEGIN
+    THROW 51007, $sourceEligibilityErrorLiteral, 1;
+END;
+"@)
+    }
+
     $enableStatements.Add(@"
 IF NOT EXISTS ( SELECT 1 FROM cdc.change_tables AS ct
                 WHERE ct.capture_instance = $captureLiteral
@@ -282,27 +295,44 @@ if ($DropUnlistedCaptureInstances) {
 DECLARE @cdc_source_schema sysname,
         @cdc_source_name sysname,
         @cdc_capture_instance sysname,
+        @cdc_source_object_id int,
         @cdc_disable_result int;
 
 DECLARE @cdc_unlisted_instances TABLE
 (
+    source_object_id int NOT NULL,
     source_schema sysname NOT NULL,
     source_name sysname NOT NULL,
     capture_instance sysname NOT NULL
 );
 
-INSERT INTO @cdc_unlisted_instances (source_schema, source_name, capture_instance)
-    SELECT s.name, t.name, ct.capture_instance
+INSERT INTO @cdc_unlisted_instances (source_object_id, source_schema, source_name, capture_instance)
+    SELECT ct.source_object_id, s.name, t.name, ct.capture_instance
     FROM cdc.change_tables AS ct
     JOIN sys.tables AS t ON t.object_id = ct.source_object_id
     JOIN sys.schemas AS s ON s.schema_id = t.schema_id$cleanupPredicate;
+
+-- SQL Server interprets 'all' as every instance on a table, not one instance.
+IF EXISTS ( SELECT 1 FROM @cdc_unlisted_instances AS unlisted
+            WHERE unlisted.capture_instance = N'all'
+              AND EXISTS ( SELECT 1 FROM cdc.change_tables AS ct
+                           WHERE ct.source_object_id = unlisted.source_object_id
+                             AND NOT EXISTS ( SELECT 1 FROM @cdc_unlisted_instances AS pending
+                                              WHERE pending.capture_instance = ct.capture_instance
+                                            )
+                         )
+          )
+BEGIN
+    THROW 51006, N'Cannot safely remove a capture instance named ''all'' while retaining another instance on its table. SQL Server treats ''all'' as every instance on that table. Retain it in the CSV or remove every instance for its table.', 1;
+END;
 
 WHILE EXISTS ( SELECT 1 FROM @cdc_unlisted_instances )
 BEGIN
     SELECT TOP (1)
         @cdc_source_schema = source_schema,
         @cdc_source_name = source_name,
-        @cdc_capture_instance = capture_instance
+        @cdc_capture_instance = capture_instance,
+        @cdc_source_object_id = source_object_id
     FROM @cdc_unlisted_instances
     ORDER BY capture_instance;
 
@@ -314,7 +344,8 @@ BEGIN
         THROW 51005, N'Failed to disable an unlisted CDC capture instance. Stopping before enabling new instances.', 1;
 
     DELETE FROM @cdc_unlisted_instances
-    WHERE capture_instance = @cdc_capture_instance;
+    WHERE capture_instance = @cdc_capture_instance
+       OR (@cdc_capture_instance = N'all' AND source_object_id = @cdc_source_object_id);
 END;
 "@
     $cleanupBody += "`n`n"
