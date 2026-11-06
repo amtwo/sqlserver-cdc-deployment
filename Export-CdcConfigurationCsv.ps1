@@ -85,7 +85,7 @@ $connectionStringBuilder['Initial Catalog'] = $Database
 $connectionStringBuilder['Application Name'] = 'SQL Server CDC Configuration CSV Export'
 $connectionStringBuilder['Connect Timeout'] = 15
 $connectionStringBuilder['Encrypt'] = $true
-$connectionStringBuilder['Trust Server Certificate'] = $TrustServerCertificate.IsPresent
+$connectionStringBuilder['TrustServerCertificate'] = $TrustServerCertificate.IsPresent
 $connectionStringBuilder['Persist Security Info'] = $false
 
 if ($null -ne $Credential) {
