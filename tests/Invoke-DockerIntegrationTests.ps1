@@ -24,6 +24,7 @@ $containerName = "sqlserver-cdc-test-$runId"
 $containerCreated = $false
 $script:sqlFileNumber = 0
 $script:sqlcmdPath = $null
+$script:lockBlockerSessionId = $null
 $script:passed = [System.Collections.Generic.List[string]]::new()
 $savedSaPassword = $env:MSSQL_SA_PASSWORD
 $savedSqlcmdPassword = $env:SQLCMDPASSWORD
@@ -330,26 +331,29 @@ EXEC sys.sp_cdc_enable_table @source_schema=N'dbo', @source_name=N'Omitted', @ro
     )
     if ($lockTimeoutProbe -ceq $lockTimeoutSql) { throw 'Unable to insert the session lock-timeout assertion.' }
     $before = Get-CaptureSnapshot -Database CdcCleanup
-    $blockerSql = "BEGIN TRAN; SELECT COUNT(*) FROM cdc.dbo_stuff_CT WITH (TABLOCKX, HOLDLOCK); WAITFOR DELAY '00:00:15'; ROLLBACK;"
+    $blockerSql = "BEGIN TRAN; SELECT COUNT(*) FROM cdc.dbo_stuff_CT WITH (TABLOCKX, HOLDLOCK); WAITFOR DELAY '00:02:00'; ROLLBACK;"
     Invoke-TestDocker -DockerArguments @('exec', '-d', '--env', 'SQLCMDPASSWORD', $containerName, $script:sqlcmdPath,
         '-S', 'tcp:127.0.0.1,1433', '-U', 'sa', '-C', '-b', '-d', 'CdcCleanup', '-Q', $blockerSql) | Out-Null
     $blockerReady = $false
-    $blockerDeadline = [DateTime]::UtcNow.AddSeconds(8)
+    $blockerDeadline = [DateTime]::UtcNow.AddSeconds(20)
     do {
-        $blockerReady = [int](Invoke-TestSql -Database CdcCleanup -Sql "SELECT COUNT(*) FROM sys.dm_tran_locks WHERE resource_database_id=DB_ID() AND resource_associated_entity_id=OBJECT_ID(N'cdc.dbo_stuff_CT') AND request_mode=N'X' AND request_status=N'GRANT' AND request_session_id <> @@SPID;") -gt 0
+        $blockerSession = Invoke-TestSql -Database CdcCleanup -Sql "SELECT TOP (1) request_session_id FROM sys.dm_tran_locks WHERE resource_database_id=DB_ID() AND resource_associated_entity_id=OBJECT_ID(N'cdc.dbo_stuff_CT') AND request_mode=N'X' AND request_status=N'GRANT' AND request_session_id <> @@SPID;"
+        $blockerReady = -not [string]::IsNullOrWhiteSpace($blockerSession)
+        if ($blockerReady) { $script:lockBlockerSessionId = [int]$blockerSession.Trim() }
         if ($blockerReady) { break }
         Start-Sleep -Milliseconds 200
     } while ([DateTime]::UtcNow -lt $blockerDeadline)
     if (-not $blockerReady) { throw 'The disposable blocker did not acquire an exclusive lock on the CDC change table.' }
-    Invoke-TestSql -Database CdcCleanup -Sql $lockTimeoutProbe -ExpectedLockTimeout | Out-Null
-    Assert-Unchanged $before -Database CdcCleanup
-    Complete-Test 'A blocked CDC cleanup fails at the configured lock timeout without changing capture instances'
-    do {
-        $blockerReady = [int](Invoke-TestSql -Database CdcCleanup -Sql "SELECT COUNT(*) FROM sys.dm_tran_locks WHERE resource_database_id=DB_ID() AND resource_associated_entity_id=OBJECT_ID(N'cdc.dbo_stuff_CT') AND request_mode=N'X' AND request_status=N'GRANT' AND request_session_id <> @@SPID;") -gt 0
-        if (-not $blockerReady) { break }
-        Start-Sleep -Milliseconds 200
-    } while ([DateTime]::UtcNow -lt $blockerDeadline.AddSeconds(12))
-    if ($blockerReady) { throw 'The disposable lock blocker did not release its test lock.' }
+    try {
+        Invoke-TestSql -Database CdcCleanup -Sql $lockTimeoutProbe -ExpectedLockTimeout | Out-Null
+        Assert-Unchanged $before -Database CdcCleanup
+        Complete-Test 'A blocked CDC cleanup fails at the configured lock timeout without changing capture instances'
+    }
+    finally {
+        try { Invoke-TestSql -Database CdcCleanup -Sql "KILL $script:lockBlockerSessionId;" | Out-Null }
+        catch { Write-Warning "Unable to stop the disposable lock-blocker session; the owned test container will be removed: $_" }
+        $script:lockBlockerSessionId = $null
+    }
 
     $rotationSql = New-TestManifestSql -Name cleanup-rotation -Rows $rotationRows -DropUnlistedCaptureInstances
     if ($rotationSql.Contains("N'dbo_stuff'")) { throw 'Cleanup SQL explicitly embeds the removed capture name.' }
@@ -463,6 +467,10 @@ END CATCH;
 }
 finally {
     if ($containerCreated) {
+        if ($script:lockBlockerSessionId) {
+            try { Invoke-TestSql -Database CdcCleanup -Sql "KILL $script:lockBlockerSessionId;" | Out-Null }
+            catch { Write-Warning "Unable to stop the disposable lock-blocker session; removing its owned test container: $_" }
+        }
         & docker logs $containerName *> (Join-Path $outputDirectory 'container.log')
         & docker cp "${containerName}:/var/opt/mssql/log/sqlagent.out" (Join-Path $outputDirectory 'sqlagent.log') 2>$null
         $cleanupOutput = & docker rm --force $containerName 2>&1
