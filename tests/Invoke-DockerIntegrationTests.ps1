@@ -323,6 +323,13 @@ EXEC sys.sp_cdc_enable_table @source_schema=N'dbo', @source_name=N'Omitted', @ro
     Assert-Unchanged $before -Database CdcCleanup
     Complete-Test 'Default mode preserves unlisted instances and rejects occupied slots'
 
+    $lockTimeoutSql = New-TestManifestSql -Name lock-timeout -Rows $rotationRows -DropUnlistedCaptureInstances -LockTimeout 500
+    $lockTimeoutProbe = $lockTimeoutSql.Replace(
+        'SET LOCK_TIMEOUT 500;',
+        "SET LOCK_TIMEOUT 500;`nIF @@LOCK_TIMEOUT <> 500 THROW 52000, N'Configured lock timeout is not active for this session.', 1;"
+    )
+    if ($lockTimeoutProbe -ceq $lockTimeoutSql) { throw 'Unable to insert the session lock-timeout assertion.' }
+    $before = Get-CaptureSnapshot -Database CdcCleanup
     $blockerSql = "BEGIN TRAN; SELECT COUNT(*) FROM cdc.dbo_stuff_CT WITH (TABLOCKX, HOLDLOCK); WAITFOR DELAY '00:00:15'; ROLLBACK;"
     Invoke-TestDocker -DockerArguments @('exec', '-d', '--env', 'SQLCMDPASSWORD', $containerName, $script:sqlcmdPath,
         '-S', 'tcp:127.0.0.1,1433', '-U', 'sa', '-C', '-b', '-d', 'CdcCleanup', '-Q', $blockerSql) | Out-Null
@@ -334,9 +341,7 @@ EXEC sys.sp_cdc_enable_table @source_schema=N'dbo', @source_name=N'Omitted', @ro
         Start-Sleep -Milliseconds 200
     } while ([DateTime]::UtcNow -lt $blockerDeadline)
     if (-not $blockerReady) { throw 'The disposable blocker did not acquire an exclusive lock on the CDC change table.' }
-    $lockTimeoutSql = New-TestManifestSql -Name lock-timeout -Rows $rotationRows -DropUnlistedCaptureInstances -LockTimeout 500
-    $before = Get-CaptureSnapshot -Database CdcCleanup
-    Invoke-TestSql -Database CdcCleanup -Sql $lockTimeoutSql -ExpectedLockTimeout | Out-Null
+    Invoke-TestSql -Database CdcCleanup -Sql $lockTimeoutProbe -ExpectedLockTimeout | Out-Null
     Assert-Unchanged $before -Database CdcCleanup
     Complete-Test 'A blocked CDC cleanup fails at the configured lock timeout without changing capture instances'
     do {
