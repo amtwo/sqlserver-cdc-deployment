@@ -1,0 +1,4 @@
+SourceSchema,SourceName,CaptureInstanceName
+dbo,loans,library_loans
+dbo,fines,library_fines
+dbo,audit_logs,library_audit_logs

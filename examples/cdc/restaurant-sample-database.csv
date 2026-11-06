@@ -1,0 +1,4 @@
+SourceSchema,SourceName,CaptureInstanceName
+dbo,orders,restaurant_orders
+dbo,order_items,restaurant_order_items
+dbo,payments,restaurant_payments
