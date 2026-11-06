@@ -32,3 +32,7 @@ The seed creates 23 tables and loads data before the generated CDC configuration
 - Hostile CSV text remains data in both lookup expressions and error messages.
 
 This suite exercises generated SQL directly after schema creation. DACPAC build and publish integration is documented in the project README and is not exercised by this suite.
+
+## Windows PowerShell compatibility
+
+Both checked-in CSV examples generated SQL successfully with Windows PowerShell **5.1.26100.9711**, and their output matched PowerShell **7.6.9** after line-ending normalization. This was a generator compatibility check; the Docker integration suite runs with PowerShell 7.

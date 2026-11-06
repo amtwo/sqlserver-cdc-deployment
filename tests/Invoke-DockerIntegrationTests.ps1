@@ -49,7 +49,7 @@ function Invoke-TestSql {
     [IO.File]::WriteAllText($localFile, "SET NOCOUNT ON;`n$Sql", [Text.UTF8Encoding]::new($false))
     Invoke-TestDocker -DockerArguments @('cp', $localFile, "${containerName}:/tmp/$fileName") | Out-Null
     $output = & docker exec --env SQLCMDPASSWORD $containerName $script:sqlcmdPath `
-        -S localhost -U sa -C -b -r 1 -l 15 -t 90 -f 65001 -h -1 -W -d $Database -i "/tmp/$fileName" 2>&1
+        -S 'tcp:127.0.0.1,1433' -U sa -C -b -r 1 -l 15 -t 90 -f 65001 -h -1 -W -d $Database -i "/tmp/$fileName" 2>&1
     $exitCode = $LASTEXITCODE
     $text = ($output -join [Environment]::NewLine).Trim()
     [IO.File]::WriteAllText((Join-Path $outputDirectory "$fileName.log"), $text)
@@ -133,7 +133,7 @@ try {
     $deadline = [DateTime]::UtcNow.AddMinutes(2)
     do {
         $readinessOutput = & docker exec --env SQLCMDPASSWORD $containerName $script:sqlcmdPath `
-            -S localhost -U sa -C -b -l 2 -Q 'SELECT 1' 2>&1
+            -S 'tcp:127.0.0.1,1433' -U sa -C -b -l 2 -Q 'SELECT 1' 2>&1
         $readinessExitCode = $LASTEXITCODE
         ($readinessOutput -join [Environment]::NewLine) | Set-Content (Join-Path $outputDirectory 'readiness.log')
         if ($readinessExitCode -eq 0) { $ready = $true; break }

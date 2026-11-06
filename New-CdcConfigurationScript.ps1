@@ -142,16 +142,7 @@ IF EXISTS
     FROM
     (
         SELECT requested.source_object_id,
-               SUM
-               (
-                   CASE WHEN EXISTS
-                   (
-                       SELECT 1
-                       FROM cdc.change_tables AS ct
-                       WHERE ct.source_object_id = requested.source_object_id
-                         AND ct.capture_instance = requested.capture_instance
-                   ) THEN 0 ELSE 1 END
-               ) AS missing_instance_count
+               SUM(CASE WHEN existing.object_id IS NULL THEN 1 ELSE 0 END) AS missing_instance_count
         FROM
         (
             SELECT OBJECT_ID(QUOTENAME(requestedInput.source_schema) + N'.' + QUOTENAME(requestedInput.source_name), N'U') AS source_object_id,
@@ -160,6 +151,9 @@ IF EXISTS
                 $requestedConfigurations
             ) AS requestedInput(source_schema, source_name, capture_instance)
         ) AS requested
+        LEFT JOIN cdc.change_tables AS existing
+            ON existing.source_object_id = requested.source_object_id
+           AND existing.capture_instance = requested.capture_instance
         WHERE requested.source_object_id IS NOT NULL
         GROUP BY requested.source_object_id
     ) AS planned
