@@ -104,7 +104,6 @@ END;
 DECLARE @cdc_source_schema sysname,
         @cdc_source_name sysname,
         @cdc_capture_instance sysname,
-        @cdc_source_object_id int,
         @cdc_disable_result int;
 
 DECLARE @cdc_unlisted_instances TABLE
@@ -131,7 +130,7 @@ INSERT INTO @cdc_unlisted_instances (source_object_id, source_schema, source_nam
 
 -- SQL Server interprets 'all' as every instance on a table, not one instance.
 IF EXISTS ( SELECT 1 FROM @cdc_unlisted_instances AS unlisted
-            WHERE unlisted.capture_instance = N'all'
+            WHERE LOWER(unlisted.capture_instance) = N'all'
               AND EXISTS ( SELECT 1 FROM cdc.change_tables AS ct
                            WHERE ct.source_object_id = unlisted.source_object_id
                              AND NOT EXISTS ( SELECT 1 FROM @cdc_unlisted_instances AS pending
@@ -140,7 +139,7 @@ IF EXISTS ( SELECT 1 FROM @cdc_unlisted_instances AS unlisted
                          )
           )
 BEGIN
-    THROW 51006, N'Cannot safely remove a capture instance named ''all'' while retaining another instance on its table. SQL Server treats ''all'' as every instance on that table. Retain it in the CSV or remove every instance for its table.', 1;
+    THROW 51006, N'Cannot safely remove a capture instance matching ''all'' while retaining another instance on its table. SQL Server uses ''all'' as a table-wide selector. Retain it in the CSV or remove every instance for its table.', 1;
 END;
 
 WHILE EXISTS ( SELECT 1 FROM @cdc_unlisted_instances )
@@ -148,8 +147,7 @@ BEGIN
     SELECT TOP (1)
         @cdc_source_schema = source_schema,
         @cdc_source_name = source_name,
-        @cdc_capture_instance = capture_instance,
-        @cdc_source_object_id = source_object_id
+        @cdc_capture_instance = capture_instance
     FROM @cdc_unlisted_instances
     ORDER BY capture_instance;
 
@@ -160,9 +158,14 @@ BEGIN
     IF @cdc_disable_result <> 0
         THROW 51005, N'Failed to disable an unlisted CDC capture instance. Stopping before enabling new instances.', 1;
 
-    DELETE FROM @cdc_unlisted_instances
-    WHERE capture_instance = @cdc_capture_instance
-       OR (@cdc_capture_instance = N'all' AND source_object_id = @cdc_source_object_id);
+    DELETE pending
+    FROM @cdc_unlisted_instances AS pending
+    WHERE NOT EXISTS ( SELECT 1 FROM cdc.change_tables AS ct
+                       WHERE ct.source_object_id = pending.source_object_id
+                         AND ct.capture_instance = pending.capture_instance
+                     );
+    IF @@ROWCOUNT = 0
+        THROW 51005, N'CDC cleanup did not remove the requested capture instance. Stopping before enabling new instances.', 1;
 END;
 
 -- Enable only missing capture instances.

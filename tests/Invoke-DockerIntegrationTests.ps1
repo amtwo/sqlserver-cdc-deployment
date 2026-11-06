@@ -392,6 +392,35 @@ EXEC sys.sp_cdc_enable_table @source_schema=N'dbo', @source_name=N'Stuff', @role
     Invoke-TestSql -Database CdcCleanup -Sql "IF EXISTS (SELECT 1 FROM cdc.change_tables) THROW 52000, 'Header-only cleanup failed with a reserved-name instance.', 1;" | Out-Null
     Complete-Test 'Reserved all instance cannot accidentally remove a retained instance'
 
+    foreach ($case in @(
+        @{ Database = 'CdcReservedCS'; Collation = 'Latin1_General_100_CS_AS'; Capture = 'ALL' },
+        @{ Database = 'CdcReservedAI'; Collation = 'Latin1_General_100_CI_AI'; Capture = 'áll' }
+    )) {
+        Invoke-TestSql -Sql "CREATE DATABASE $($case.Database) COLLATE $($case.Collation);" | Out-Null
+        Invoke-TestSql -Database $case.Database -Sql @"
+CREATE TABLE dbo.Probe (id int PRIMARY KEY);
+EXEC sys.sp_cdc_enable_db;
+EXEC sys.sp_cdc_enable_table @source_schema=N'dbo', @source_name=N'Probe', @role_name=NULL, @capture_instance=N'$($case.Capture)', @supports_net_changes=0;
+EXEC sys.sp_cdc_enable_table @source_schema=N'dbo', @source_name=N'Probe', @role_name=NULL, @capture_instance=N'keep_case', @supports_net_changes=0;
+"@ | Out-Null
+        $retainedBefore = Invoke-TestSql -Database $case.Database -Sql "SELECT object_id, CONVERT(varchar(33), create_date, 126) FROM cdc.change_tables WHERE capture_instance=N'keep_case';"
+        $caseCleanupSql = New-TestManifestSql -Name $case.Database -Rows @((New-TestRow Probe keep_case)) -DropUnlistedCaptureInstances
+        $probeSql = @"
+BEGIN TRY
+$caseCleanupSql
+END TRY
+BEGIN CATCH
+    IF ERROR_NUMBER() <> 51006 THROW;
+END CATCH;
+"@
+        Invoke-TestSql -Database $case.Database -Sql $probeSql | Out-Null
+        $retainedAfter = Invoke-TestSql -Database $case.Database -Sql "SELECT object_id, CONVERT(varchar(33), create_date, 126) FROM cdc.change_tables WHERE capture_instance=N'keep_case';"
+        if ($retainedAfter -cne $retainedBefore) { throw 'A selector variant removed and recreated a retained instance.' }
+        Invoke-TestSql -Database $case.Database -Sql $emptySql | Out-Null
+        Invoke-TestSql -Database $case.Database -Sql "IF EXISTS (SELECT 1 FROM cdc.change_tables) THROW 52000, 'Selector-variant cleanup left unlisted instances.', 1;" | Out-Null
+    }
+    Complete-Test 'Case and accent selector variants preserve retained captures and fully clean an empty desired set'
+
     [ordered]@{
         engine = $version; image = $digest; powershell = $PSVersionTable.PSVersion.ToString()
         fixtureUrl = $fixtureUrl; fixtureSha256 = $expectedHash; passed = @($script:passed)
