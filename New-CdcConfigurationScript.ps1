@@ -146,7 +146,7 @@ IF EXISTS
     HAVING COUNT(*) > 1
 )
 BEGIN
-    THROW 51004, N'Capture instance names must be unique under the target database collation.', 1;
+    THROW 51004, N'The CSV configuration used to generate this script contains multiple capture instances with the same name. Capture instances must be unique under the target database collation.', 1;
 END;
 "@)
 
