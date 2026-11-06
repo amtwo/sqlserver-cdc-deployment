@@ -1,16 +1,16 @@
 # SQL Server Docker integration tests
 
-Run from a checkout using PowerShell 7 and a running **x64 Linux Docker engine**:
+Run from a checkout on a **native x64 Linux host** using PowerShell 7 and its local Docker Engine:
 
 ```powershell
 pwsh -NoProfile -File ./tests/Invoke-DockerIntegrationTests.ps1
 ```
 
-The script downloads the SQL Server 2022 Developer image, creates a uniquely named container with a random password, and waits for SQL Server to accept connections. SQL Server Agent is enabled for the change-capture check. The database container has no published ports, external network access, or mounted volumes. The script connects using `sqlcmd` inside that container and removes its container in `finally`, including on failure.
+The script downloads the SQL Server 2022 Developer image, creates a uniquely named container with a random password, and waits for SQL Server to accept connections. SQL Server Agent is enabled for the change-capture check. The container uses a Docker internal network with no external network access or mounted volumes. The host reaches SQL Server through the container's private bridge address so the CSV exporter can be exercised from PowerShell without publishing a port. This host-to-bridge connection requires native Linux Docker; Docker Desktop and remote Docker contexts do not expose container bridge IPs to the host. SQL checks run using `sqlcmd` inside the container, and the script removes its container and network in `finally`, including on failure.
 
 The default image is `mcr.microsoft.com/mssql/server:2022-latest`. To reproduce a particular image or check another SQL Server release with the same tools layout, pass `-Image` with an image tag or digest. Successful runs record `@@VERSION`, the image digest, PowerShell version, and passed checks in `obj/integration/<run-id>/results.json`. Generated manifests, SQL, query results, and server logs are retained beside it.
 
-Microsoft's SQL Server container requires x64; see the [container deployment documentation](https://learn.microsoft.com/en-us/sql/linux/containers/deploy?view=sql-server-ver16). On an ARM64 development machine, use the **SQL Server integration** GitHub Actions job, which runs this same script on an x64 Ubuntu runner. The workflow uploads its test output even when a check fails.
+Microsoft's SQL Server container requires x64; see the [container deployment documentation](https://learn.microsoft.com/en-us/sql/linux/containers/deploy?view=sql-server-ver16). On Windows, macOS, ARM64, or remote Docker setups, use the **SQL Server integration** GitHub Actions job, which runs this same script on a native x64 Ubuntu runner. The workflow uploads its test output even when a check fails.
 
 ## Restaurant fixture
 
@@ -31,6 +31,7 @@ The seed creates 23 tables and loads data before the generated CDC configuration
 - Capture-instance names that collide under an accent-insensitive collation are rejected before changes, for both the same and different source tables.
 - Apostrophes and closing brackets in identifiers work with `QUOTENAME` inside `OBJECT_ID`.
 - Hostile CSV text remains data in both lookup expressions and error messages.
+- The CSV exporter returns the configured source names and capture instances, does not emit a UTF-8 byte order mark, and rejects a database with CDC disabled before writing output.
 
 This Docker suite exercises generated SQL directly after schema creation. The build checks below verify DACPAC packaging separately; DACPAC publish itself is not exercised.
 

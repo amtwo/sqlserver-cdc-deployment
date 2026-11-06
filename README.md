@@ -24,6 +24,24 @@ sales,Invoice,invoice_capture
 
 The source schema and table identify the table passed to `sys.sp_cdc_enable_table`; the capture instance is the desired name. Each capture instance name must be unique in the manifest under the target database's collation, including its case and accent comparison rules. SQL Server permits at most two capture instances per source table.
 
+## Initialize a manifest from an existing database
+
+Use `Export-CdcConfigurationCsv.ps1` to create a manifest from a database that already has table-level CDC capture instances:
+
+```powershell
+./Export-CdcConfigurationCsv.ps1 `
+    -ServerInstance 'sql01,1433' `
+    -Database 'Library' `
+    -OutputPath ./cdc/tables.csv `
+    -Credential (Get-Credential)
+```
+
+The script reads `cdc.change_tables` and the source table names, then writes the current `SourceSchema`, `SourceName`, and `CaptureInstanceName` rows in deterministic order. It does not enable, disable, or otherwise change CDC. The SQL login needs permission to connect to the database and read its CDC metadata; Windows integrated authentication is used when `-Credential` is omitted.
+
+Connections are encrypted. For a local development instance using a self-signed certificate, add `-TrustServerCertificate`. The output directory must already exist. The script refuses to overwrite the output if CDC is disabled, a source name cannot be resolved, or the database has no table-level capture instances.
+
+Review the exported CSV, commit it as the manifest, then generate the deployment SQL as described below. This is useful for bringing an existing database under manifest-based configuration; subsequent deployments still use the CSV as their desired state.
+
 ## Generate the deployment script
 
 ```powershell
